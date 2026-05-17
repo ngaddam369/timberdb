@@ -14,6 +14,7 @@ import (
 	"encoding/binary"
 	"hash/crc32"
 	"io"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -70,8 +71,12 @@ func (w *WAL) periodicSync() {
 		select {
 		case <-w.ticker.C:
 			w.mu.Lock()
-			_ = w.bw.Flush()
-			_ = w.file.Sync()
+			if err := w.bw.Flush(); err != nil {
+				slog.Error("wal periodic flush failed", "err", err)
+			}
+			if err := w.file.Sync(); err != nil {
+				slog.Error("wal periodic sync failed", "err", err)
+			}
 			w.mu.Unlock()
 		case <-w.done:
 			return
@@ -101,17 +106,24 @@ func (w *WAL) Append(r record.Record) error {
 // A partial last record (detected via CRC mismatch or unexpected EOF) is
 // silently truncated — this is the expected result of a crash mid-write.
 // Replay must be called before any Append calls.
-func (w *WAL) Replay(fn func(record.Record)) error {
+func (w *WAL) Replay(fn func(record.Record)) (retErr error) {
 	// Flush any buffered bytes so the reader sees everything on disk.
 	w.mu.Lock()
-	_ = w.bw.Flush()
+	err := w.bw.Flush()
 	w.mu.Unlock()
+	if err != nil {
+		return err
+	}
 
 	f, err := os.Open(w.file.Name())
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && retErr == nil {
+			retErr = cerr
+		}
+	}()
 
 	br := bufio.NewReader(f)
 	for {
