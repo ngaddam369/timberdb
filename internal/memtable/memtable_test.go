@@ -164,7 +164,7 @@ func TestFreeze(t *testing.T) {
 		m.Append(record.Record{Timestamp: 2, SourceID: []byte("s"), Payload: []byte("p")})
 	}
 
-	got := collectAll(t, frozen.Iterator())
+	got := collectAll(t, frozen)
 	assert.Len(t, got, 1, "frozen snapshot must not reflect post-freeze appends")
 }
 

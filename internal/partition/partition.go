@@ -26,11 +26,6 @@ type PartitionWindow struct {
 	End   int64 // Unix nanoseconds, exclusive
 }
 
-// Contains reports whether ts falls within [Start, End).
-func (w PartitionWindow) Contains(ts int64) bool {
-	return ts >= w.Start && ts < w.End
-}
-
 // Overlaps reports whether [start, end) shares any range with [w.Start, w.End).
 func (w PartitionWindow) Overlaps(start, end int64) bool {
 	return w.Start < end && w.End > start
@@ -85,7 +80,7 @@ func (p *TimePartition) MemtableSize() int64 {
 }
 
 // FreezeMemtable returns an immutable snapshot of the memtable for background flushing.
-func (p *TimePartition) FreezeMemtable() *memtable.ImmutableMemtable {
+func (p *TimePartition) FreezeMemtable() record.Iterator {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.mem.Freeze()

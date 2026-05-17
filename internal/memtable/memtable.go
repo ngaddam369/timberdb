@@ -75,24 +75,14 @@ func (m *Memtable) ApproximateSize() int64 {
 	return m.sizeBytes
 }
 
-// Freeze returns a read-only snapshot of the current buffer for background flushing.
-// Subsequent Append calls to m do not affect the returned snapshot.
-func (m *Memtable) Freeze() *ImmutableMemtable {
+// Freeze returns a sorted Iterator over a point-in-time snapshot of the buffer.
+// The snapshot is isolated from subsequent Append calls and is used during SSTable flush.
+func (m *Memtable) Freeze() record.Iterator {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	snapshot := make([]record.Record, len(m.records))
 	copy(snapshot, m.records)
-	return &ImmutableMemtable{records: snapshot}
-}
-
-// ImmutableMemtable is a frozen, read-only view of a Memtable used during SSTable flush.
-type ImmutableMemtable struct {
-	records []record.Record
-}
-
-// Iterator returns a full sorted Iterator over the frozen records.
-func (im *ImmutableMemtable) Iterator() record.Iterator {
-	return &iterator{records: im.records, pos: -1, end: math.MaxInt64}
+	return &iterator{records: snapshot, pos: -1, end: math.MaxInt64}
 }
 
 // iterator is a forward-only cursor over a sorted record slice.

@@ -40,7 +40,7 @@ func TestPartitionWindowContains(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, win.Contains(tc.ts))
+			assert.Equal(t, tc.want, win.Start <= tc.ts && tc.ts < win.End)
 		})
 	}
 }
@@ -181,7 +181,7 @@ func TestRouterWindowAssignment(t *testing.T) {
 		ts := base.Add(time.Duration(h)*time.Hour + 30*time.Minute).UnixNano()
 		p, err := r.Route(ts)
 		require.NoError(t, err, "hour %d", h)
-		assert.True(t, p.Window.Contains(ts), "timestamp must fall within returned partition window")
+		assert.True(t, p.Window.Start <= ts && ts < p.Window.End, "timestamp must fall within returned partition window")
 		seen[p.Window] = true
 	}
 	assert.Len(t, seen, 24, "24 distinct 1-hour partitions expected")
