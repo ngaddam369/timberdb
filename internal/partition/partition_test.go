@@ -1,4 +1,4 @@
-package partition_test
+package partition
 
 import (
 	"testing"
@@ -7,7 +7,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ngaddam369/timberdb/internal/partition"
 	"github.com/ngaddam369/timberdb/internal/record"
 )
 
@@ -25,7 +24,7 @@ func collectAll(t *testing.T, it record.Iterator) []record.Record {
 // ── PartitionWindow ──────────────────────────────────────────────────────────
 
 func TestPartitionWindowContains(t *testing.T) {
-	win := partition.PartitionWindow{Start: 100, End: 200}
+	win := PartitionWindow{Start: 100, End: 200}
 	tests := []struct {
 		name string
 		ts   int64
@@ -46,7 +45,7 @@ func TestPartitionWindowContains(t *testing.T) {
 }
 
 func TestPartitionWindowOverlaps(t *testing.T) {
-	win := partition.PartitionWindow{Start: 100, End: 200}
+	win := PartitionWindow{Start: 100, End: 200}
 	tests := []struct {
 		name       string
 		start, end int64
@@ -71,36 +70,36 @@ func TestPartitionWindowOverlaps(t *testing.T) {
 // ── TimePartition lifecycle ──────────────────────────────────────────────────
 
 func TestPartitionAppendAndSeal(t *testing.T) {
-	win := partition.PartitionWindow{Start: 0, End: 1_000}
-	p := partition.NewPartition(win, "")
+	win := PartitionWindow{Start: 0, End: 1_000}
+	p := NewPartition(win, "")
 	r := record.Record{Timestamp: 500, SourceID: []byte("s"), Payload: []byte("p")}
 
 	t.Run("accepts_write_when_open", func(t *testing.T) {
 		require.NoError(t, p.Append(r))
-		assert.Equal(t, partition.StateOpen, p.State())
+		assert.Equal(t, StateOpen, p.State())
 	})
 
 	t.Run("rejects_write_after_seal", func(t *testing.T) {
 		p.Seal()
-		assert.Equal(t, partition.StateSealed, p.State())
-		assert.ErrorIs(t, p.Append(r), partition.ErrPartitionSealed)
+		assert.Equal(t, StateSealed, p.State())
+		assert.ErrorIs(t, p.Append(r), ErrPartitionSealed)
 	})
 
 	t.Run("seal_is_idempotent", func(t *testing.T) {
 		p.Seal()
-		assert.Equal(t, partition.StateSealed, p.State())
+		assert.Equal(t, StateSealed, p.State())
 	})
 
 	t.Run("deleted_after_mark_deleted", func(t *testing.T) {
 		p.MarkDeleted()
-		assert.Equal(t, partition.StateDeleted, p.State())
-		assert.ErrorIs(t, p.Append(r), partition.ErrPartitionSealed)
+		assert.Equal(t, StateDeleted, p.State())
+		assert.ErrorIs(t, p.Append(r), ErrPartitionSealed)
 	})
 }
 
 func TestPartitionScan(t *testing.T) {
-	win := partition.PartitionWindow{Start: 0, End: 1_000}
-	p := partition.NewPartition(win, "")
+	win := PartitionWindow{Start: 0, End: 1_000}
+	p := NewPartition(win, "")
 	for i := range 10 {
 		require.NoError(t, p.Append(record.Record{
 			Timestamp: int64(i * 100),
@@ -143,16 +142,16 @@ func TestPartitionIsSealable(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			end := now.Add(tc.windowEndOffset).UnixNano()
-			win := partition.PartitionWindow{Start: end - time.Hour.Nanoseconds(), End: end}
-			p := partition.NewPartition(win, "")
+			win := PartitionWindow{Start: end - time.Hour.Nanoseconds(), End: end}
+			p := NewPartition(win, "")
 			assert.Equal(t, tc.want, p.IsSealable(now, tc.lateArrivalWindow))
 		})
 	}
 }
 
 func TestPartitionIsExpired(t *testing.T) {
-	win := partition.PartitionWindow{Start: 0, End: 1_000}
-	p := partition.NewPartition(win, "")
+	win := PartitionWindow{Start: 0, End: 1_000}
+	p := NewPartition(win, "")
 	tests := []struct {
 		name             string
 		retentionHorizon int64
@@ -172,12 +171,12 @@ func TestPartitionIsExpired(t *testing.T) {
 // ── Router ───────────────────────────────────────────────────────────────────
 
 func TestRouterWindowAssignment(t *testing.T) {
-	r := partition.NewRouter(time.Hour, 5*time.Minute, partition.Strict)
+	r := NewRouter(time.Hour, 5*time.Minute, Strict)
 	// Start one full hour ahead so all 24 timestamps are always in the future,
 	// regardless of when in the current hour this test runs.
 	base := time.Now().Add(time.Hour).Truncate(time.Hour)
 
-	seen := make(map[partition.PartitionWindow]bool)
+	seen := make(map[PartitionWindow]bool)
 	for h := range 24 {
 		ts := base.Add(time.Duration(h)*time.Hour + 30*time.Minute).UnixNano()
 		p, err := r.Route(ts)
@@ -197,7 +196,7 @@ func TestRouterNegativeTimestamp(t *testing.T) {
 	// routed to the dedicated late partition; they go through windowFor directly, which
 	// is where the floor-division fix matters.
 	const hugeWindow = time.Duration(9_000_000_000_000_000_000) // ~285 years
-	r := partition.NewRouter(time.Hour, hugeWindow, partition.Strict)
+	r := NewRouter(time.Hour, hugeWindow, Strict)
 
 	cases := []struct {
 		name string
@@ -219,7 +218,7 @@ func TestRouterNegativeTimestamp(t *testing.T) {
 }
 
 func TestRouterRouteStability(t *testing.T) {
-	r := partition.NewRouter(time.Hour, 5*time.Minute, partition.Strict)
+	r := NewRouter(time.Hour, 5*time.Minute, Strict)
 	ts := time.Now().Add(time.Hour).UnixNano() // safely in the future
 
 	p1, err := r.Route(ts)
@@ -234,20 +233,20 @@ func TestRouterLateArrival(t *testing.T) {
 	lateTS := time.Now().Add(-2 * time.Hour).UnixNano() // well outside any reasonable window
 
 	t.Run("strict_rejects", func(t *testing.T) {
-		r := partition.NewRouter(time.Hour, 5*time.Minute, partition.Strict)
+		r := NewRouter(time.Hour, 5*time.Minute, Strict)
 		_, err := r.Route(lateTS)
-		assert.ErrorIs(t, err, partition.ErrLateArrival)
+		assert.ErrorIs(t, err, ErrLateArrival)
 	})
 
 	t.Run("tolerant_accepts", func(t *testing.T) {
-		r := partition.NewRouter(time.Hour, 5*time.Minute, partition.Tolerant)
+		r := NewRouter(time.Hour, 5*time.Minute, Tolerant)
 		p, err := r.Route(lateTS)
 		require.NoError(t, err)
 		require.NotNil(t, p, "tolerant mode must return a late-arrival partition")
 	})
 
 	t.Run("tolerant_same_partition_for_all_late", func(t *testing.T) {
-		r := partition.NewRouter(time.Hour, 5*time.Minute, partition.Tolerant)
+		r := NewRouter(time.Hour, 5*time.Minute, Tolerant)
 		p1, _ := r.Route(lateTS)
 		p2, _ := r.Route(time.Now().Add(-3 * time.Hour).UnixNano())
 		assert.Same(t, p1, p2, "all late arrivals must go to the same dedicated partition")
@@ -255,7 +254,7 @@ func TestRouterLateArrival(t *testing.T) {
 }
 
 func TestRouterOverlapping(t *testing.T) {
-	r := partition.NewRouter(time.Hour, 5*time.Minute, partition.Strict)
+	r := NewRouter(time.Hour, 5*time.Minute, Strict)
 	base := time.Now().Truncate(time.Hour)
 
 	// Create partitions for hours +10, +11, +12.
@@ -289,27 +288,27 @@ func TestRouterOverlapping(t *testing.T) {
 }
 
 func TestRouterSealExpired(t *testing.T) {
-	r := partition.NewRouter(time.Hour, 5*time.Minute, partition.Strict)
+	r := NewRouter(time.Hour, 5*time.Minute, Strict)
 	now := time.Now()
 
 	// Inject a partition whose window closed 2 hours ago — past the 5-min late-arrival window.
-	oldWin := partition.PartitionWindow{
+	oldWin := PartitionWindow{
 		Start: now.Add(-3 * time.Hour).UnixNano(),
 		End:   now.Add(-2 * time.Hour).UnixNano(),
 	}
-	old := partition.NewPartition(oldWin, "")
+	old := NewPartition(oldWin, "")
 	r.AddPartition(old)
 
 	// Inject a partition whose window closed 3 minutes ago — still within late-arrival window.
-	recentWin := partition.PartitionWindow{
+	recentWin := PartitionWindow{
 		Start: now.Add(-4 * time.Minute).UnixNano(),
 		End:   now.Add(-3 * time.Minute).UnixNano(),
 	}
-	recent := partition.NewPartition(recentWin, "")
+	recent := NewPartition(recentWin, "")
 	r.AddPartition(recent)
 
 	r.SealExpired(now)
 
-	assert.Equal(t, partition.StateSealed, old.State(), "old partition must be sealed")
-	assert.Equal(t, partition.StateOpen, recent.State(), "recent partition is still within late-arrival window")
+	assert.Equal(t, StateSealed, old.State(), "old partition must be sealed")
+	assert.Equal(t, StateOpen, recent.State(), "recent partition is still within late-arrival window")
 }

@@ -1,4 +1,4 @@
-package wal_test
+package wal
 
 import (
 	"encoding/binary"
@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ngaddam369/timberdb/internal/record"
-	"github.com/ngaddam369/timberdb/internal/wal"
 )
 
 // fixture records used across several tests.
@@ -21,9 +20,9 @@ var fixtureRecords = []record.Record{
 	{Timestamp: 3_000, SourceID: []byte("src-1"), Payload: []byte("payload-3")},
 }
 
-func writeAndClose(t *testing.T, path string, mode wal.WALSyncMode, records []record.Record) {
+func writeAndClose(t *testing.T, path string, mode WALSyncMode, records []record.Record) {
 	t.Helper()
-	w, err := wal.Open(path, mode)
+	w, err := Open(path, mode)
 	require.NoError(t, err)
 	for _, r := range records {
 		require.NoError(t, w.Append(r))
@@ -33,7 +32,7 @@ func writeAndClose(t *testing.T, path string, mode wal.WALSyncMode, records []re
 
 func replayAll(t *testing.T, path string) []record.Record {
 	t.Helper()
-	w, err := wal.Open(path, wal.SyncNever)
+	w, err := Open(path, SyncNever)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = w.Close() })
 
@@ -46,11 +45,11 @@ func replayAll(t *testing.T, path string) []record.Record {
 func TestWALAppendReplay(t *testing.T) {
 	tests := []struct {
 		name     string
-		syncMode wal.WALSyncMode
+		syncMode WALSyncMode
 	}{
-		{"SyncAlways", wal.SyncAlways},
-		{"SyncPeriodic", wal.SyncPeriodic},
-		{"SyncNever", wal.SyncNever},
+		{"SyncAlways", SyncAlways},
+		{"SyncPeriodic", SyncPeriodic},
+		{"SyncNever", SyncNever},
 	}
 
 	for _, tc := range tests {
@@ -95,7 +94,7 @@ func TestWALReplayPartialWrite(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "partial.wal")
-			writeAndClose(t, path, wal.SyncAlways, records)
+			writeAndClose(t, path, SyncAlways, records)
 
 			info, err := os.Stat(path)
 			require.NoError(t, err)
@@ -116,7 +115,7 @@ func TestWALReplayPartialWrite(t *testing.T) {
 func TestWALReplayEmptyFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "empty.wal")
 
-	w, err := wal.Open(path, wal.SyncAlways)
+	w, err := Open(path, SyncAlways)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = w.Close() })
 
@@ -131,7 +130,7 @@ func TestWALReplayMalformedBodySilentStop(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.wal")
 
 	// Write one valid record.
-	w, err := wal.Open(path, wal.SyncAlways)
+	w, err := Open(path, SyncAlways)
 	require.NoError(t, err)
 	require.NoError(t, w.Append(record.Record{Timestamp: 42, SourceID: []byte("s"), Payload: []byte("p")}))
 	require.NoError(t, w.Close())
@@ -171,7 +170,7 @@ func TestWALRotate(t *testing.T) {
 	path1 := filepath.Join(dir, "wal-1.wal")
 	path2 := filepath.Join(dir, "wal-2.wal")
 
-	w, err := wal.Open(path1, wal.SyncAlways)
+	w, err := Open(path1, SyncAlways)
 	require.NoError(t, err)
 
 	require.NoError(t, w.Append(record.Record{Timestamp: 1_000, SourceID: []byte("src"), Payload: []byte("before")}))
