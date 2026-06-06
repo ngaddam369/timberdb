@@ -1,0 +1,226 @@
+package sstable
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/ngaddam369/timberdb/internal/record"
+)
+
+// writeSSTable writes records to a temp SSTable and returns the path and meta.
+func writeSSTable(t *testing.T, opts WriterOptions, records []record.Record) (string, SSTableMeta) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "test.sst")
+	w, err := NewWriter(path, opts)
+	require.NoError(t, err)
+	for _, r := range records {
+		require.NoError(t, w.Add(r))
+	}
+	meta, err := w.Finish()
+	require.NoError(t, err)
+	return path, meta
+}
+
+// collectScan drains an iterator into a slice.
+func collectScan(t *testing.T, r *Reader, start, end int64, sourceID []byte) []record.Record {
+	t.Helper()
+	it, err := r.Scan(start, end, sourceID)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = it.Close() })
+	var out []record.Record
+	for it.Next() {
+		out = append(out, it.Record())
+	}
+	return out
+}
+
+func TestReaderMetaRoundTrip(t *testing.T) {
+	recs := []record.Record{
+		{Timestamp: 100, SourceID: []byte("s1"), Payload: []byte("a")},
+		{Timestamp: 200, SourceID: []byte("s2"), Payload: []byte("b")},
+	}
+	opts := WriterOptions{BlockSizeBytes: defaultBlockSize, PartitionStart: 50, PartitionEnd: 300}
+	path, written := writeSSTable(t, opts, recs)
+
+	r, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	got := r.Meta()
+	assert.Equal(t, written.MinTimestamp, got.MinTimestamp)
+	assert.Equal(t, written.MaxTimestamp, got.MaxTimestamp)
+	assert.Equal(t, written.RecordCount, got.RecordCount)
+	assert.Equal(t, written.PartitionStart, got.PartitionStart)
+	assert.Equal(t, written.PartitionEnd, got.PartitionEnd)
+	assert.Equal(t, written.TimeIndexOffset, got.TimeIndexOffset)
+	assert.Equal(t, written.TimeIndexSize, got.TimeIndexSize)
+}
+
+func TestReaderScanFullRange(t *testing.T) {
+	var recs []record.Record
+	for i := range 100 {
+		recs = append(recs, record.Record{
+			Timestamp: int64(i+1) * 1000,
+			SourceID:  []byte("src"),
+			Payload:   []byte("data"),
+		})
+	}
+	path, _ := writeSSTable(t, DefaultWriterOptions(), recs)
+
+	r, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	got := collectScan(t, r, 0, int64(101*1000), nil)
+	assert.Equal(t, recs, got)
+}
+
+func TestReaderScanSubRange(t *testing.T) {
+	var recs []record.Record
+	for i := range 20 {
+		recs = append(recs, record.Record{
+			Timestamp: int64(i+1) * 1000,
+			SourceID:  []byte("s"),
+			Payload:   []byte("x"),
+		})
+	}
+	path, _ := writeSSTable(t, DefaultWriterOptions(), recs)
+
+	r, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	// Scan [5000, 15000) — expect records at 5000…14000.
+	got := collectScan(t, r, 5000, 15000, nil)
+	require.Len(t, got, 10)
+	assert.Equal(t, int64(5000), got[0].Timestamp)
+	assert.Equal(t, int64(14000), got[len(got)-1].Timestamp)
+}
+
+func TestReaderScanNoOverlap(t *testing.T) {
+	// File covers [16000, 17000); query is [14000, 15000) — no overlap.
+	recs := []record.Record{
+		{Timestamp: 16000, SourceID: []byte("s"), Payload: []byte("a")},
+		{Timestamp: 16500, SourceID: []byte("s"), Payload: []byte("b")},
+	}
+	opts := WriterOptions{BlockSizeBytes: defaultBlockSize, PartitionStart: 16000, PartitionEnd: 17000}
+	path, _ := writeSSTable(t, opts, recs)
+
+	r, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	got := collectScan(t, r, 14000, 15000, nil)
+	assert.Empty(t, got)
+}
+
+func TestReaderScanSourceFilter(t *testing.T) {
+	recs := []record.Record{
+		{Timestamp: 1000, SourceID: []byte("alpha"), Payload: []byte("1")},
+		{Timestamp: 2000, SourceID: []byte("beta"), Payload: []byte("2")},
+		{Timestamp: 3000, SourceID: []byte("alpha"), Payload: []byte("3")},
+		{Timestamp: 4000, SourceID: []byte("beta"), Payload: []byte("4")},
+	}
+	path, _ := writeSSTable(t, DefaultWriterOptions(), recs)
+
+	r, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	cases := []struct {
+		name     string
+		sourceID []byte
+		wantLen  int
+		wantTS   []int64
+	}{
+		{"filter alpha", []byte("alpha"), 2, []int64{1000, 3000}},
+		{"filter beta", []byte("beta"), 2, []int64{2000, 4000}},
+		{"no filter", nil, 4, []int64{1000, 2000, 3000, 4000}},
+		{"unknown source", []byte("gamma"), 0, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := collectScan(t, r, 0, 5000, tc.sourceID)
+			assert.Len(t, got, tc.wantLen)
+			for i, ts := range tc.wantTS {
+				assert.Equal(t, ts, got[i].Timestamp)
+			}
+		})
+	}
+}
+
+func TestReaderScanMultiBlock(t *testing.T) {
+	// Tiny blocks force many splits; verify complete sorted round-trip.
+	opts := WriterOptions{BlockSizeBytes: 64}
+	var recs []record.Record
+	for i := range 200 {
+		recs = append(recs, record.Record{
+			Timestamp: int64(i+1) * 1000,
+			SourceID:  []byte("src"),
+			Payload:   make([]byte, 16),
+		})
+	}
+	path, meta := writeSSTable(t, opts, recs)
+	assert.Greater(t, meta.TimeIndexSize/timeIndexEntrySize, uint64(1))
+
+	r, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	got := collectScan(t, r, 0, int64(201*1000), nil)
+	require.Len(t, got, 200)
+	for i, rec := range got {
+		assert.Equal(t, int64(i+1)*1000, rec.Timestamp, "record %d out of order", i)
+	}
+}
+
+func TestReaderScanSourceIndexSkip(t *testing.T) {
+	// With IndexSources enabled, querying an absent source returns empty without scanning blocks.
+	opts := WriterOptions{BlockSizeBytes: defaultBlockSize, IndexSources: true}
+	recs := []record.Record{
+		{Timestamp: 1000, SourceID: []byte("alpha"), Payload: []byte("a")},
+		{Timestamp: 2000, SourceID: []byte("alpha"), Payload: []byte("b")},
+	}
+	path, _ := writeSSTable(t, opts, recs)
+
+	r, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	got := collectScan(t, r, 0, 3000, []byte("missing"))
+	assert.Empty(t, got)
+}
+
+func TestReaderInvalidMagic(t *testing.T) {
+	cases := []struct {
+		name    string
+		content []byte
+	}{
+		{"empty file", []byte{}},
+		{"too short", make([]byte, footerSize-1)},
+		{"wrong magic", make([]byte, footerSize)}, // all-zero footer has wrong magic
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "bad.sst")
+			require.NoError(t, os.WriteFile(path, tc.content, 0644))
+			_, err := NewReader(path)
+			assert.ErrorIs(t, err, ErrInvalidMagic)
+		})
+	}
+}
+
+func TestReaderEmptySSTable(t *testing.T) {
+	path, _ := writeSSTable(t, DefaultWriterOptions(), nil)
+
+	r, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	got := collectScan(t, r, 0, 9999, nil)
+	assert.Empty(t, got)
+}
