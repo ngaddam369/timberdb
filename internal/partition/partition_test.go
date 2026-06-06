@@ -173,8 +173,9 @@ func TestPartitionIsExpired(t *testing.T) {
 
 func TestRouterWindowAssignment(t *testing.T) {
 	r := partition.NewRouter(time.Hour, 5*time.Minute, partition.Strict)
-	// Use future timestamps to ensure they are never in the late-arrival zone.
-	base := time.Now().Truncate(time.Hour)
+	// Start one full hour ahead so all 24 timestamps are always in the future,
+	// regardless of when in the current hour this test runs.
+	base := time.Now().Add(time.Hour).Truncate(time.Hour)
 
 	seen := make(map[partition.PartitionWindow]bool)
 	for h := range 24 {
