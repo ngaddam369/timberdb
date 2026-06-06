@@ -132,6 +132,17 @@ func (r *Router) AddPartition(p *TimePartition) {
 // windowFor computes the PartitionWindow that contains ts.
 func (r *Router) windowFor(ts int64) PartitionWindow {
 	dur := r.windowDuration.Nanoseconds()
-	start := (ts / dur) * dur
+	start := floorDiv(ts, dur) * dur
 	return PartitionWindow{Start: start, End: start + dur}
+}
+
+// floorDiv returns floor(a/b) for integer operands, correct for negative a.
+// Go's built-in / truncates toward zero, which gives the wrong window for
+// timestamps before the epoch.
+func floorDiv(a, b int64) int64 {
+	q := a / b
+	if (a^b) < 0 && q*b != a {
+		q--
+	}
+	return q
 }

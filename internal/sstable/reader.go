@@ -73,6 +73,10 @@ func NewReader(path string) (*Reader, error) {
 		PartitionEnd:    int64(binary.LittleEndian.Uint64(footerBuf[64:])),
 	}
 
+	if meta.RecordCount > 0 && meta.TimeIndexSize == 0 {
+		return nil, ErrInvalidMagic
+	}
+
 	timeIndex, err := loadTimeIndex(f, meta)
 	if err != nil {
 		return nil, err

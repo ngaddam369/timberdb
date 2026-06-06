@@ -1,6 +1,8 @@
 package wal_test
 
 import (
+	"encoding/binary"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"testing"
@@ -121,6 +123,46 @@ func TestWALReplayEmptyFile(t *testing.T) {
 	var count int
 	require.NoError(t, w.Replay(func(record.Record) { count++ }))
 	assert.Equal(t, 0, count)
+}
+
+// TestWALReplayMalformedBodySilentStop verifies that a body with internally
+// inconsistent field lengths stops replay gracefully — no panic, no error.
+func TestWALReplayMalformedBodySilentStop(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.wal")
+
+	// Write one valid record.
+	w, err := wal.Open(path, wal.SyncAlways)
+	require.NoError(t, err)
+	require.NoError(t, w.Append(record.Record{Timestamp: 42, SourceID: []byte("s"), Payload: []byte("p")}))
+	require.NoError(t, w.Close())
+
+	// Manually craft a record whose CRC is valid but whose srcIDLen overflows the body.
+	// Body layout: Timestamp(8B) | srcIDLen(4B) | payloadLen(4B) = 16 bytes.
+	// srcIDLen=9999 claims 9999 bytes of SourceID, but the body is only 16 bytes.
+	body := make([]byte, 16)
+	binary.LittleEndian.PutUint64(body[0:8], uint64(999))
+	binary.LittleEndian.PutUint32(body[8:12], 9999) // overflows
+	binary.LittleEndian.PutUint32(body[12:16], 0)
+
+	var hdr [8]byte
+	binary.LittleEndian.PutUint32(hdr[4:8], uint32(len(body)))
+	h := crc32.NewIEEE()
+	h.Write(hdr[4:8])
+	h.Write(body)
+	binary.LittleEndian.PutUint32(hdr[0:4], h.Sum32())
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	require.NoError(t, err)
+	_, err = f.Write(hdr[:])
+	require.NoError(t, err)
+	_, err = f.Write(body)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	// Replay must return exactly 1 record (the valid one) without panicking.
+	got := replayAll(t, path)
+	require.Len(t, got, 1)
+	assert.Equal(t, int64(42), got[0].Timestamp)
 }
 
 // TestWALRotate verifies that after Rotate each file contains only its own records.

@@ -195,6 +195,27 @@ func TestReaderScanSourceIndexSkip(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+func TestReaderCorruptedFooterNoTimeIndex(t *testing.T) {
+	// A footer with RecordCount>0 but TimeIndexSize=0 is structurally inconsistent
+	// and must be rejected as corrupt rather than causing a nil-slice panic in Scan.
+	recs := []record.Record{
+		{Timestamp: 1000, SourceID: []byte("s"), Payload: []byte("a")},
+	}
+	path, _ := writeSSTable(t, DefaultWriterOptions(), recs)
+
+	// Patch TimeIndexSize (footer offset 24, 8 bytes) to zero.
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(t, err)
+	_, err = f.WriteAt(make([]byte, 8), info.Size()-footerSize+24)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	_, err = NewReader(path)
+	assert.ErrorIs(t, err, ErrInvalidMagic)
+}
+
 func TestReaderInvalidMagic(t *testing.T) {
 	cases := []struct {
 		name    string

@@ -188,6 +188,36 @@ func TestRouterWindowAssignment(t *testing.T) {
 	assert.Len(t, seen, 24, "24 distinct 1-hour partitions expected")
 }
 
+func TestRouterNegativeTimestamp(t *testing.T) {
+	// Timestamps before the Unix epoch are valid (e.g. historical data, test fixtures).
+	// Go's integer division truncates toward zero, which gives the wrong partition window
+	// for negative timestamps — floorDiv must be used instead.
+	//
+	// A ~285-year late-arrival window ensures that small negative timestamps are NOT
+	// routed to the dedicated late partition; they go through windowFor directly, which
+	// is where the floor-division fix matters.
+	const hugeWindow = time.Duration(9_000_000_000_000_000_000) // ~285 years
+	r := partition.NewRouter(time.Hour, hugeWindow, partition.Strict)
+
+	cases := []struct {
+		name string
+		ts   int64
+	}{
+		{"minus_one_ns", -1},
+		{"minus_one_hour_exactly", -int64(time.Hour)},
+		{"minus_one_hour_minus_one_ns", -int64(time.Hour) - 1},
+		{"minus_3661_seconds", -3661 * int64(time.Second)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := r.Route(tc.ts)
+			require.NoError(t, err)
+			assert.True(t, p.Window.Start <= tc.ts && tc.ts < p.Window.End,
+				"ts=%d must be inside window [%d, %d)", tc.ts, p.Window.Start, p.Window.End)
+		})
+	}
+}
+
 func TestRouterRouteStability(t *testing.T) {
 	r := partition.NewRouter(time.Hour, 5*time.Minute, partition.Strict)
 	ts := time.Now().Add(time.Hour).UnixNano() // safely in the future

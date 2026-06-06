@@ -156,7 +156,11 @@ func (w *WAL) Replay(fn func(record.Record)) (retErr error) {
 			return nil // CRC mismatch = partial last record, silently stop
 		}
 
-		fn(decodeBody(body))
+		rec, ok := decodeBody(body)
+		if !ok {
+			return nil // malformed body after valid CRC — stop replay
+		}
+		fn(rec)
 	}
 }
 
@@ -230,15 +234,25 @@ func encodeRecord(r record.Record) []byte {
 }
 
 // decodeBody decodes a body slice (everything after the 8-byte header) into a Record.
-func decodeBody(body []byte) record.Record {
+// Returns false if the body is too short or the embedded lengths are inconsistent.
+func decodeBody(body []byte) (record.Record, bool) {
+	if len(body) < 16 { // ts(8) + srcIDLen(4) + payloadLen(4) minimum
+		return record.Record{}, false
+	}
 	ts := int64(binary.LittleEndian.Uint64(body[0:8]))
 	srcIDLen := int(binary.LittleEndian.Uint32(body[8:12]))
+	if 12+srcIDLen+4 > len(body) {
+		return record.Record{}, false
+	}
 	srcID := make([]byte, srcIDLen)
 	copy(srcID, body[12:12+srcIDLen])
 	off := 12 + srcIDLen
 	payloadLen := int(binary.LittleEndian.Uint32(body[off : off+4]))
 	off += 4
+	if off+payloadLen != len(body) {
+		return record.Record{}, false
+	}
 	payload := make([]byte, payloadLen)
 	copy(payload, body[off:off+payloadLen])
-	return record.Record{Timestamp: ts, SourceID: srcID, Payload: payload}
+	return record.Record{Timestamp: ts, SourceID: srcID, Payload: payload}, true
 }
