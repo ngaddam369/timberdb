@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -29,7 +30,7 @@ func flushToSSTable(t *testing.T, path string, p *partition.TimePartition, m *ma
 	w, err := sstable.NewWriter(path, opts)
 	require.NoError(t, err)
 
-	it := p.FreezeMemtable()
+	it := p.SwapMemtable()
 	for it.Next() {
 		require.NoError(t, w.Add(it.Record()))
 	}
@@ -318,7 +319,7 @@ func TestLateArrivalTolerantIntegration(t *testing.T) {
 	// not visible via All() — their durability is verified via the WAL count above.
 	var onTimeInMemtable int
 	for _, p := range router.All() {
-		it := p.FreezeMemtable()
+		it := p.Scan(math.MinInt64, math.MaxInt64, nil)
 		for it.Next() {
 			onTimeInMemtable++
 		}

@@ -129,6 +129,13 @@ func (r *Router) AddPartition(p *TimePartition) {
 	r.partitions[p.Window] = p
 }
 
+// WindowFor returns the PartitionWindow that contains ts.
+// Used by the engine during WAL replay to determine which partition window
+// a record belongs to without creating a new partition.
+func (r *Router) WindowFor(ts int64) PartitionWindow {
+	return r.windowFor(ts)
+}
+
 // windowFor computes the PartitionWindow that contains ts.
 func (r *Router) windowFor(ts int64) PartitionWindow {
 	dur := r.windowDuration.Nanoseconds()

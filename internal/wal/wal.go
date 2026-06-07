@@ -166,6 +166,8 @@ func (w *WAL) Replay(fn func(record.Record)) (retErr error) {
 
 // Rotate fsyncs and closes the current WAL file, then opens newPath for subsequent writes.
 // Called after a successful SSTable flush to seal the current WAL segment.
+// The new file is opened before the old one is closed so that the WAL remains
+// usable if the new-file open fails.
 func (w *WAL) Rotate(newPath string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -175,15 +177,18 @@ func (w *WAL) Rotate(newPath string) error {
 	if err := w.file.Sync(); err != nil {
 		return err
 	}
-	if err := w.file.Close(); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(newPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	newFile, err := os.OpenFile(newPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
+		return err // old file still open — WAL remains usable
+	}
+	if err := w.file.Close(); err != nil {
+		if cerr := newFile.Close(); cerr != nil {
+			slog.Error("wal: close new file after old-file close error", "err", cerr)
+		}
 		return err
 	}
-	w.file = f
-	w.bw = bufio.NewWriterSize(f, 64*1024)
+	w.file = newFile
+	w.bw = bufio.NewWriterSize(newFile, 64*1024)
 	return nil
 }
 

@@ -11,7 +11,7 @@ import (
 	"github.com/ngaddam369/timberdb/internal/record"
 )
 
-// State represents the lifecycle phase of a TimePartition.
+// State represents the lifecycle state of a TimePartition.
 type State int
 
 const (
@@ -64,7 +64,6 @@ func (p *TimePartition) Append(r record.Record) error {
 }
 
 // Scan returns an Iterator over records in [start, end), optionally filtered by sourceID.
-// Phase 1: reads the memtable only. SSTable reads are added in Phase 2.
 func (p *TimePartition) Scan(start, end int64, sourceID []byte) record.Iterator {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -79,11 +78,14 @@ func (p *TimePartition) MemtableSize() int64 {
 	return p.mem.ApproximateSize()
 }
 
-// FreezeMemtable returns an immutable snapshot of the memtable for background flushing.
-func (p *TimePartition) FreezeMemtable() record.Iterator {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.mem.Freeze()
+// SwapMemtable atomically snapshots the current memtable and replaces it with a
+// fresh empty one so the partition continues accepting writes after a flush.
+func (p *TimePartition) SwapMemtable() record.Iterator {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	snap := p.mem.Freeze()
+	p.mem = memtable.New()
+	return snap
 }
 
 // Seal transitions the partition from Open to Sealed, refusing further writes.

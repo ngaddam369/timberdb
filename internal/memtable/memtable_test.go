@@ -1,4 +1,4 @@
-package memtable_test
+package memtable
 
 import (
 	"math/rand/v2"
@@ -7,7 +7,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ngaddam369/timberdb/internal/memtable"
 	"github.com/ngaddam369/timberdb/internal/record"
 )
 
@@ -66,7 +65,7 @@ func TestSortedInsertion(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m := memtable.New()
+			m := New()
 			rng := rand.New(rand.NewPCG(42, 0))
 
 			for i := range tc.n {
@@ -99,7 +98,7 @@ func TestScanBounds(t *testing.T) {
 		{"beyond_range", 1_000, 2_000, 0},
 	}
 
-	m := memtable.New()
+	m := New()
 	for i := range 100 {
 		m.Append(record.Record{
 			Timestamp: int64(i * 10),
@@ -122,7 +121,7 @@ func TestScanBounds(t *testing.T) {
 
 // TestScanSourceFilter verifies that Scan filters by SourceID when one is provided.
 func TestScanSourceFilter(t *testing.T) {
-	m := memtable.New()
+	m := New()
 	for i := range 20 {
 		m.Append(record.Record{Timestamp: int64(i), SourceID: []byte("alpha"), Payload: []byte("a")})
 		m.Append(record.Record{Timestamp: int64(i), SourceID: []byte("beta"), Payload: []byte("b")})
@@ -154,7 +153,7 @@ func TestScanSourceFilter(t *testing.T) {
 
 // TestFreeze verifies that the frozen snapshot is unaffected by subsequent Append calls.
 func TestFreeze(t *testing.T) {
-	m := memtable.New()
+	m := New()
 	m.Append(record.Record{Timestamp: 1, SourceID: []byte("s"), Payload: []byte("p")})
 
 	frozen := m.Freeze()
@@ -199,7 +198,7 @@ func TestApproximateSize(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m := memtable.New()
+			m := New()
 			for _, r := range tc.records {
 				m.Append(r)
 			}

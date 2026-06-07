@@ -70,8 +70,8 @@ func (m *Manifest) Append(edit VersionEdit) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.seq++
-	edit.Seq = m.seq
+	next := m.seq + 1
+	edit.Seq = next
 
 	body, err := json.Marshal(edit)
 	if err != nil {
@@ -94,7 +94,11 @@ func (m *Manifest) Append(edit VersionEdit) error {
 	if err := m.bw.Flush(); err != nil {
 		return err
 	}
-	return m.f.Sync()
+	if err := m.f.Sync(); err != nil {
+		return err
+	}
+	m.seq = next // advance only after successful fsync
+	return nil
 }
 
 // Replay reads all complete VersionEdits from the manifest and calls fn for each,
