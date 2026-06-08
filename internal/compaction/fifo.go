@@ -8,8 +8,10 @@ import (
 // FIFOStrategy implements Strategy with a first-in-first-out policy.
 // It merges all files in a partition when the count exceeds MaxFilesPerPartition,
 // and expires files whose MaxTimestamp predates the retention horizon.
-// FIFO is the correct primary strategy for time-partitioned append-only data:
-// oldest data expires first as a unit, so near-1× write amplification is achievable.
+// FIFO is the correct primary strategy for time-partitioned append-only data: once
+// a partition window seals its SSTable is never rewritten again, bounding compaction
+// WA to a small constant per window. Overall system WA is ~2× (WAL write + one flush),
+// compared to 10–50× for leveled LSM stores where records are rewritten across levels.
 type FIFOStrategy struct {
 	MaxFilesPerPartition int
 }
