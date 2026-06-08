@@ -47,7 +47,7 @@ type Engine struct {
 	// retention. They are closed on engine shutdown to avoid use-after-free during
 	// in-flight scans that may still hold iterators from those readers.
 	closedReaders []*sstable.Reader
-	strategy      *compaction.FIFOStrategy
+	strategy      compaction.Strategy
 	closed        bool
 }
 
@@ -351,6 +351,13 @@ func (e *Engine) flushPartition(p *partition.TimePartition) error {
 		return err
 	}
 
+	if meta.RecordCount == 0 {
+		if err := os.Remove(sstPath); err != nil && !os.IsNotExist(err) {
+			slog.Error("engine: remove empty SSTable failed", "path", sstPath, "err", err)
+		}
+		return nil
+	}
+
 	if err := e.manifest.Append(manifest.VersionEdit{
 		AddedFiles: []manifest.FileEntry{{
 			Path:           sstPath,
@@ -366,12 +373,16 @@ func (e *Engine) flushPartition(p *partition.TimePartition) error {
 
 	// Rotate the WAL so the next segment only contains post-flush records.
 	e.mu.Lock()
+	oldWALPath := e.walPath(e.walSeq)
 	e.walSeq++
 	newWALPath := e.walPath(e.walSeq)
 	e.mu.Unlock()
 
 	if err := e.wal.Rotate(newWALPath); err != nil {
 		return err
+	}
+	if err := os.Remove(oldWALPath); err != nil && !os.IsNotExist(err) {
+		slog.Error("engine: remove old WAL segment failed", "path", oldWALPath, "err", err)
 	}
 
 	r, err := sstable.NewReader(sstPath)

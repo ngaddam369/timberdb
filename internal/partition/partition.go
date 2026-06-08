@@ -98,7 +98,8 @@ func (p *TimePartition) Seal() {
 	}
 }
 
-// MarkDeleted transitions a sealed partition to Deleted once all its SSTables are removed.
+// MarkDeleted transitions a partition to Deleted. The caller must verify the partition is
+// Sealed and all its SSTables have been removed before calling this.
 func (p *TimePartition) MarkDeleted() {
 	p.mu.Lock()
 	defer p.mu.Unlock()

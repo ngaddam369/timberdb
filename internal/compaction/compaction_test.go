@@ -176,6 +176,82 @@ func TestCompaction(t *testing.T) {
 		assert.False(t, live[path2], "input 2 must not be live in manifest")
 	})
 
+	t.Run("merge_single_reader", func(t *testing.T) {
+		dir := t.TempDir()
+		m, err := manifest.Open(filepath.Join(dir, "MANIFEST"))
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, m.Close()) })
+
+		wopts := sstable.WriterOptions{
+			BlockSizeBytes: sstable.DefaultWriterOptions().BlockSizeBytes,
+			PartitionStart: win.Start,
+			PartitionEnd:   win.End,
+		}
+
+		path1 := filepath.Join(dir, "only.sst")
+		buildSSTable(t, path1, win, []record.Record{
+			{Timestamp: 1, SourceID: []byte("s"), Payload: []byte("p1")},
+			{Timestamp: 2, SourceID: []byte("s"), Payload: []byte("p2")},
+		})
+
+		r1, err := sstable.NewReader(path1)
+		require.NoError(t, err)
+
+		outPath := filepath.Join(dir, "merged.sst")
+		merged, err := Merge([]*sstable.Reader{r1}, outPath, wopts, m)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, r1.Close()) })
+		t.Cleanup(func() { require.NoError(t, merged.Close()) })
+
+		assert.Equal(t, uint64(2), merged.Meta().RecordCount)
+
+		it, err := merged.Scan(math.MinInt64, math.MaxInt64, nil)
+		require.NoError(t, err)
+		var got []record.Record
+		for it.Next() {
+			got = append(got, it.Record())
+		}
+		require.NoError(t, it.Close())
+		require.Len(t, got, 2)
+		assert.Equal(t, int64(1), got[0].Timestamp)
+		assert.Equal(t, int64(2), got[1].Timestamp)
+	})
+
+	t.Run("merge_empty_reader", func(t *testing.T) {
+		dir := t.TempDir()
+		m, err := manifest.Open(filepath.Join(dir, "MANIFEST"))
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, m.Close()) })
+
+		wopts := sstable.WriterOptions{
+			BlockSizeBytes: sstable.DefaultWriterOptions().BlockSizeBytes,
+			PartitionStart: win.Start,
+			PartitionEnd:   win.End,
+		}
+
+		// One SSTable with records, one empty.
+		pathFull := filepath.Join(dir, "full.sst")
+		pathEmpty := filepath.Join(dir, "empty.sst")
+		buildSSTable(t, pathFull, win, []record.Record{
+			{Timestamp: 10, SourceID: []byte("s"), Payload: []byte("p")},
+		})
+		buildSSTable(t, pathEmpty, win, nil)
+
+		rFull, err := sstable.NewReader(pathFull)
+		require.NoError(t, err)
+		rEmpty, err := sstable.NewReader(pathEmpty)
+		require.NoError(t, err)
+
+		outPath := filepath.Join(dir, "merged.sst")
+		merged, err := Merge([]*sstable.Reader{rFull, rEmpty}, outPath, wopts, m)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, rFull.Close()) })
+		t.Cleanup(func() { require.NoError(t, rEmpty.Close()) })
+		t.Cleanup(func() { require.NoError(t, merged.Close()) })
+
+		assert.Equal(t, uint64(1), merged.Meta().RecordCount)
+	})
+
 	t.Run("merge_inputs_deleted", func(t *testing.T) {
 		dir := t.TempDir()
 		m, err := manifest.Open(filepath.Join(dir, "MANIFEST"))

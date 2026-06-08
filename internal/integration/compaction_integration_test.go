@@ -71,6 +71,40 @@ func TestCompactionIntegration(t *testing.T) {
 		assert.Empty(t, ssts)
 	})
 
+	t.Run("reopen_after_compaction", func(t *testing.T) {
+		dir := t.TempDir()
+		opts := engine.DefaultOptions()
+		opts.MemtableSizeBytes = 1
+		opts.MaxFilesPerPartition = 2
+		opts.CompactionCheckInterval = 20 * time.Millisecond
+
+		e := openEngine(t, dir, opts)
+		base := time.Now().Add(time.Hour).Truncate(time.Hour)
+
+		const n = 10
+		for i := range n {
+			require.NoError(t, e.Append(record.Record{
+				Timestamp: base.Add(time.Duration(i) * time.Second).UnixNano(),
+				SourceID:  []byte("src"),
+				Payload:   []byte("p"),
+			}))
+		}
+
+		time.Sleep(200 * time.Millisecond)
+		require.NoError(t, e.Close())
+
+		// Reopen and verify manifest is consistent: all records are still scannable.
+		e2, err := engine.Open(dir, opts)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, e2.Close()) })
+
+		got := drainEngine(t, e2, base, base.Add(time.Hour))
+		require.Len(t, got, n)
+		for i := 1; i < len(got); i++ {
+			assert.LessOrEqual(t, got[i-1].Timestamp, got[i].Timestamp)
+		}
+	})
+
 	t.Run("scan_expired_range_empty", func(t *testing.T) {
 		dir := t.TempDir()
 		opts := engine.DefaultOptions()
