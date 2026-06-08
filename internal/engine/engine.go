@@ -4,9 +4,11 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/ngaddam369/timberdb/internal/compaction"
 	"github.com/ngaddam369/timberdb/internal/manifest"
+	"github.com/ngaddam369/timberdb/internal/metrics"
 	"github.com/ngaddam369/timberdb/internal/partition"
 	"github.com/ngaddam369/timberdb/internal/record"
 	"github.com/ngaddam369/timberdb/internal/sstable"
@@ -48,6 +51,8 @@ type Engine struct {
 	// in-flight scans that may still hold iterators from those readers.
 	closedReaders []*sstable.Reader
 	strategy      compaction.Strategy
+	metrics       *metrics.Metrics
+	metricsServer *http.Server // nil when MetricsAddr == ""
 	closed        bool
 }
 
@@ -177,6 +182,19 @@ func Open(dir string, opts Options) (*Engine, error) {
 	}
 	e.wal = activeWAL
 
+	e.metrics = metrics.New()
+	if opts.MetricsAddr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", e.metrics.Handler())
+		srv := &http.Server{Addr: opts.MetricsAddr, Handler: mux}
+		e.metricsServer = srv
+		e.wg.Go(func() {
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("engine: metrics server failed", "addr", opts.MetricsAddr, "err", err)
+			}
+		})
+	}
+
 	e.wg.Go(e.runFlusher)
 	e.wg.Go(e.runCompactor)
 	return e, nil
@@ -193,13 +211,22 @@ func (e *Engine) Append(rec record.Record) error {
 	if err := e.wal.Append(rec); err != nil {
 		return err
 	}
+	e.metrics.WALWritesTotal.Inc()
+
 	p, err := e.router.Route(rec.Timestamp)
 	if err != nil {
+		if errors.Is(err, partition.ErrLateArrival) {
+			e.metrics.LateArrivalsTotal.Inc()
+		}
 		return err
 	}
 	if err := p.Append(rec); err != nil {
 		return err
 	}
+	e.metrics.AppendsTotal.Inc()
+	e.metrics.AppendBytesTotal.Add(float64(8 + len(rec.SourceID) + len(rec.Payload)))
+	e.metrics.ActivePartitions.Set(float64(len(e.router.All())))
+
 	if p.MemtableSize() > e.opts.MemtableSizeBytes {
 		select {
 		case e.flushCh <- p:
@@ -233,11 +260,19 @@ func (e *Engine) Scan(start, end time.Time, sourceID []byte) (record.Iterator, e
 	startNs := start.UnixNano()
 	endNs := end.UnixNano()
 
+	e.metrics.ScansTotal.Inc()
+
 	partitions := e.router.Overlapping(startNs, endNs)
 	var iters []record.Iterator
 	for _, p := range partitions {
 		iters = append(iters, p.Scan(startNs, endNs, sourceID))
 		for _, r := range e.files[p.Window] {
+			meta := r.Meta()
+			if meta.MaxTimestamp < startNs || meta.MinTimestamp > endNs {
+				e.metrics.SSTSkipsTotal.Inc()
+				continue
+			}
+			e.metrics.SSTReadsTotal.Inc()
 			it, err := r.Scan(startNs, endNs, sourceID)
 			if err != nil {
 				for _, opened := range iters {
@@ -250,7 +285,7 @@ func (e *Engine) Scan(start, end time.Time, sourceID []byte) (record.Iterator, e
 			iters = append(iters, it)
 		}
 	}
-	return newMergeIterator(iters), nil
+	return &countingIter{Iterator: newMergeIterator(iters), m: e.metrics, start: time.Now()}, nil
 }
 
 // Close flushes all open partitions to SSTables, waits for the background flusher
@@ -263,6 +298,13 @@ func (e *Engine) Close() error {
 	}
 	e.closed = true
 	close(e.closeCh)
+	if e.metricsServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := e.metricsServer.Shutdown(ctx); err != nil {
+			slog.Error("engine: metrics server shutdown failed", "err", err)
+		}
+		cancel()
+	}
 	e.mu.Unlock()
 
 	e.wg.Wait()
@@ -369,6 +411,11 @@ func (e *Engine) flushPartition(p *partition.TimePartition) error {
 		}},
 	}); err != nil {
 		return err
+	}
+	e.metrics.FlushedTotal.Inc()
+	if fi, serr := os.Stat(sstPath); serr == nil {
+		e.metrics.SSTFilesTotal.Add(1)
+		e.metrics.SSTBytesTotal.Add(float64(fi.Size()))
 	}
 
 	// Rotate the WAL so the next segment only contains post-flush records.
@@ -480,11 +527,29 @@ func (e *Engine) maybeCompact(win partition.PartitionWindow) {
 		PartitionEnd:   win.End,
 	}
 
+	// Stat input files before Merge deletes them from disk.
+	var inputBytes float64
+	for _, r := range readers {
+		if fi, serr := os.Stat(r.Meta().Path); serr == nil {
+			inputBytes += float64(fi.Size())
+		}
+	}
+
+	compactStart := time.Now()
 	merged, err := compaction.Merge(readers, outputPath, wopts, e.manifest)
 	if err != nil {
 		slog.Error("engine: compaction failed", "window", win.Start, "err", err)
 		return
 	}
+	e.metrics.CompactionDuration.Observe(time.Since(compactStart).Seconds())
+	e.metrics.CompactionsTotal.Inc()
+
+	var outputBytes float64
+	if fi, serr := os.Stat(outputPath); serr == nil {
+		outputBytes = float64(fi.Size())
+	}
+	e.metrics.SSTFilesTotal.Add(float64(1 - len(readers)))
+	e.metrics.SSTBytesTotal.Add(outputBytes - inputBytes)
 
 	mergedPaths := make(map[string]struct{}, len(readers))
 	for _, r := range readers {
@@ -512,6 +577,7 @@ func (e *Engine) sweepRetention() {
 		return
 	}
 	horizon := time.Now().Add(-e.opts.RetentionDuration).UnixNano()
+	e.metrics.RetentionHorizonTS.Set(float64(horizon))
 
 	type candidate struct {
 		win            partition.PartitionWindow
@@ -566,11 +632,19 @@ func (e *Engine) retireWindow(win partition.PartitionWindow, expiredReaders []*s
 		return
 	}
 
+	var expiredBytes float64
 	for _, m := range expiredMetas {
+		if fi, serr := os.Stat(m.Path); serr == nil {
+			expiredBytes += float64(fi.Size())
+		}
 		if err := os.Remove(m.Path); err != nil && !os.IsNotExist(err) {
 			slog.Error("engine: retention file delete failed", "path", m.Path, "err", err)
 		}
 	}
+	e.metrics.FilesExpiredTotal.Add(float64(len(expiredMetas)))
+	e.metrics.BytesReclaimedTotal.Add(expiredBytes)
+	e.metrics.SSTFilesTotal.Sub(float64(len(expiredMetas)))
+	e.metrics.SSTBytesTotal.Sub(expiredBytes)
 
 	expiredPaths := make(map[string]struct{}, len(expiredReaders))
 	for _, r := range expiredReaders {
@@ -607,4 +681,30 @@ func (e *Engine) retireWindow(win partition.PartitionWindow, expiredReaders []*s
 			}
 		}
 	}
+}
+
+// Metrics returns the metrics accessor for this engine instance. Useful for
+// scraping metric state in tests and for wiring additional instrumentation.
+func (e *Engine) Metrics() *metrics.Metrics { return e.metrics }
+
+// countingIter wraps a record.Iterator to track per-scan record count and duration.
+type countingIter struct {
+	record.Iterator
+	m     *metrics.Metrics
+	start time.Time
+	n     int64
+}
+
+func (c *countingIter) Next() bool {
+	if c.Iterator.Next() {
+		c.n++
+		return true
+	}
+	return false
+}
+
+func (c *countingIter) Close() error {
+	c.m.ScanDuration.Observe(time.Since(c.start).Seconds())
+	c.m.ScanRecordsTotal.Add(float64(c.n))
+	return c.Iterator.Close()
 }
