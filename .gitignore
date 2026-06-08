@@ -1,4 +1,5 @@
 bin/
+/timberdb
 coverage.out
 /tmp/timberdb-bench
 *.db

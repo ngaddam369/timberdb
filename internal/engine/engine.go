@@ -687,6 +687,53 @@ func (e *Engine) retireWindow(win partition.PartitionWindow, expiredReaders []*s
 // scraping metric state in tests and for wiring additional instrumentation.
 func (e *Engine) Metrics() *metrics.Metrics { return e.metrics }
 
+// PartitionInfo describes the current state of a single time-partition.
+type PartitionInfo struct {
+	Start     time.Time
+	End       time.Time
+	State     string // "open", "sealed", or "deleted"
+	SSTFiles  int
+	SizeBytes int64
+}
+
+// Partitions returns a snapshot of all partitions tracked by the engine, including
+// their state, SSTable file count, and total on-disk size. Safe for concurrent use.
+func (e *Engine) Partitions() []PartitionInfo {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	all := e.router.All()
+	infos := make([]PartitionInfo, 0, len(all))
+	for _, p := range all {
+		win := p.Window
+		readers := e.files[win]
+
+		var sizeBytes int64
+		for _, r := range readers {
+			if fi, err := os.Stat(r.Meta().Path); err == nil {
+				sizeBytes += fi.Size()
+			}
+		}
+
+		stateStr := "open"
+		switch p.State() {
+		case partition.StateSealed:
+			stateStr = "sealed"
+		case partition.StateDeleted:
+			stateStr = "deleted"
+		}
+
+		infos = append(infos, PartitionInfo{
+			Start:     time.Unix(0, win.Start).UTC(),
+			End:       time.Unix(0, win.End).UTC(),
+			State:     stateStr,
+			SSTFiles:  len(readers),
+			SizeBytes: sizeBytes,
+		})
+	}
+	return infos
+}
+
 // countingIter wraps a record.Iterator to track per-scan record count and duration.
 type countingIter struct {
 	record.Iterator
