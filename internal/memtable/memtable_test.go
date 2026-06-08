@@ -13,11 +13,12 @@ import (
 // collectAll drains an iterator into a slice and closes it.
 func collectAll(t *testing.T, it record.Iterator) []record.Record {
 	t.Helper()
-	defer it.Close()
+	defer func() { require.NoError(t, it.Close()) }()
 	var out []record.Record
 	for it.Next() {
 		out = append(out, it.Record())
 	}
+	require.NoError(t, it.Err())
 	return out
 }
 

@@ -34,6 +34,7 @@ func flushToSSTable(t *testing.T, path string, p *partition.TimePartition, m *ma
 	for it.Next() {
 		require.NoError(t, w.Add(it.Record()))
 	}
+	require.NoError(t, it.Err())
 	require.NoError(t, it.Close())
 
 	meta, err := w.Finish()
@@ -66,6 +67,7 @@ func drainReader(t *testing.T, r *sstable.Reader) []record.Record {
 	for it.Next() {
 		out = append(out, it.Record())
 	}
+	require.NoError(t, it.Err())
 	return out
 }
 

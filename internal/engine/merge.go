@@ -41,6 +41,7 @@ type mergeIterator struct {
 	iters  []record.Iterator
 	h      minHeap
 	cur    record.Record
+	err    error
 	closed bool
 }
 
@@ -50,13 +51,15 @@ func newMergeIterator(iters []record.Iterator) *mergeIterator {
 	for i, it := range iters {
 		if it.Next() {
 			heap.Push(&m.h, heapItem{rec: it.Record(), index: i})
+		} else if err := it.Err(); err != nil && m.err == nil {
+			m.err = err
 		}
 	}
 	return m
 }
 
 func (m *mergeIterator) Next() bool {
-	if len(m.h) == 0 {
+	if m.err != nil || len(m.h) == 0 {
 		return false
 	}
 	raw := heap.Pop(&m.h)
@@ -65,13 +68,17 @@ func (m *mergeIterator) Next() bool {
 		return false
 	}
 	m.cur = item.rec
-	if m.iters[item.index].Next() {
-		heap.Push(&m.h, heapItem{rec: m.iters[item.index].Record(), index: item.index})
+	it := m.iters[item.index]
+	if it.Next() {
+		heap.Push(&m.h, heapItem{rec: it.Record(), index: item.index})
+	} else if err := it.Err(); err != nil && m.err == nil {
+		m.err = err
 	}
 	return true
 }
 
 func (m *mergeIterator) Record() record.Record { return m.cur }
+func (m *mergeIterator) Err() error            { return m.err }
 
 func (m *mergeIterator) Close() error {
 	if m.closed {

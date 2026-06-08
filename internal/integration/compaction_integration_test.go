@@ -32,7 +32,19 @@ func TestCompactionIntegration(t *testing.T) {
 			}))
 		}
 
-		time.Sleep(200 * time.Millisecond)
+		// Poll until all records are visible (background flushes completed).
+		require.Eventually(t, func() bool {
+			it, err := e.Scan(base, base.Add(time.Hour), nil)
+			if err != nil {
+				return false
+			}
+			var count int
+			for it.Next() {
+				count++
+			}
+			_ = it.Close()
+			return count == n
+		}, 5*time.Second, 10*time.Millisecond, "records not all flushed within timeout")
 
 		got := drainEngine(t, e, base, base.Add(time.Hour))
 		require.Len(t, got, n)
@@ -64,7 +76,10 @@ func TestCompactionIntegration(t *testing.T) {
 			}))
 		}
 
-		time.Sleep(300 * time.Millisecond)
+		require.Eventually(t, func() bool {
+			ssts, _ := filepath.Glob(filepath.Join(dir, "*.sst"))
+			return len(ssts) == 0
+		}, 5*time.Second, 10*time.Millisecond, "SSTs not deleted by retention within timeout")
 
 		ssts, err := filepath.Glob(filepath.Join(dir, "*.sst"))
 		require.NoError(t, err)
@@ -90,7 +105,19 @@ func TestCompactionIntegration(t *testing.T) {
 			}))
 		}
 
-		time.Sleep(200 * time.Millisecond)
+		require.Eventually(t, func() bool {
+			it, err := e.Scan(base, base.Add(time.Hour), nil)
+			if err != nil {
+				return false
+			}
+			var count int
+			for it.Next() {
+				count++
+			}
+			_ = it.Close()
+			return count == n
+		}, 5*time.Second, 10*time.Millisecond, "records not all flushed within timeout")
+
 		require.NoError(t, e.Close())
 
 		// Reopen and verify manifest is consistent: all records are still scannable.
@@ -127,7 +154,10 @@ func TestCompactionIntegration(t *testing.T) {
 			}))
 		}
 
-		time.Sleep(300 * time.Millisecond)
+		require.Eventually(t, func() bool {
+			ssts, _ := filepath.Glob(filepath.Join(dir, "*.sst"))
+			return len(ssts) == 0
+		}, 5*time.Second, 10*time.Millisecond, "SSTs not deleted by retention within timeout")
 
 		// After retention, scan should return empty without error.
 		scanStart := base.Truncate(time.Hour)

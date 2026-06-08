@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"container/heap"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"os"
@@ -33,17 +34,22 @@ func Merge(
 		inputMetas[i] = r.Meta()
 	}
 
+	// drainAndCloseIters closes all iterators, logging but not masking errors.
+	drainAndCloseIters := func(its []record.Iterator) {
+		for _, it := range its {
+			if cerr := it.Close(); cerr != nil {
+				slog.Error("compaction: close iter on error", "err", cerr)
+			}
+		}
+	}
+
 	// Open a full-range scan iterator for each input reader.
 	iters := make([]record.Iterator, 0, len(readers))
 	for _, r := range readers {
 		it, err := r.Scan(math.MinInt64, math.MaxInt64, nil)
 		if err != nil {
-			for _, open := range iters {
-				if cerr := open.Close(); cerr != nil {
-					slog.Error("compaction: close iter on scan error", "err", cerr)
-				}
-			}
-			return nil, err
+			drainAndCloseIters(iters)
+			return nil, fmt.Errorf("compaction: open scan iterator: %w", err)
 		}
 		iters = append(iters, it)
 	}
@@ -55,6 +61,10 @@ func Merge(
 		if it.Next() {
 			heap.Push(h, mergeItem{rec: it.Record(), iter: it})
 		} else {
+			if err := it.Err(); err != nil {
+				drainAndCloseIters(iters)
+				return nil, fmt.Errorf("compaction: seed iterator: %w", err)
+			}
 			if cerr := it.Close(); cerr != nil {
 				slog.Error("compaction: close empty iter", "err", cerr)
 			}
@@ -96,6 +106,13 @@ func Merge(
 		if item.iter.Next() {
 			heap.Push(h, mergeItem{rec: item.iter.Record(), iter: item.iter})
 		} else {
+			if err := item.iter.Err(); err != nil {
+				if cerr := item.iter.Close(); cerr != nil {
+					slog.Error("compaction: close errored iter", "err", cerr)
+				}
+				drainHeap()
+				return nil, fmt.Errorf("compaction: merge iterator: %w", err)
+			}
 			if cerr := item.iter.Close(); cerr != nil {
 				slog.Error("compaction: close exhausted iter", "err", cerr)
 			}

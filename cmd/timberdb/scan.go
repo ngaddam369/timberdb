@@ -72,7 +72,7 @@ func newScanCmd() *cobra.Command {
 					return err
 				}
 			}
-			return nil
+			return it.Err()
 		},
 	}
 

@@ -8,8 +8,11 @@ type Record struct {
 }
 
 // Iterator is the interface for scanning records in (Timestamp, SourceID) order.
+// After Next returns false, callers must check Err() to distinguish normal
+// exhaustion from a read error.
 type Iterator interface {
 	Next() bool
 	Record() Record
 	Close() error
+	Err() error
 }

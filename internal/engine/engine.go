@@ -268,7 +268,7 @@ func (e *Engine) Scan(start, end time.Time, sourceID []byte) (record.Iterator, e
 		iters = append(iters, p.Scan(startNs, endNs, sourceID))
 		for _, r := range e.files[p.Window] {
 			meta := r.Meta()
-			if meta.MaxTimestamp < startNs || meta.MinTimestamp > endNs {
+			if meta.MaxTimestamp < startNs || meta.MinTimestamp >= endNs {
 				e.metrics.SSTSkipsTotal.Inc()
 				continue
 			}
@@ -300,10 +300,10 @@ func (e *Engine) Close() error {
 	close(e.closeCh)
 	if e.metricsServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		if err := e.metricsServer.Shutdown(ctx); err != nil {
 			slog.Error("engine: metrics server shutdown failed", "err", err)
 		}
-		cancel()
 	}
 	e.mu.Unlock()
 

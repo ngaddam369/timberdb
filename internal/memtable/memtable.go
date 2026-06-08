@@ -37,15 +37,20 @@ func (m *Memtable) Append(r record.Record) {
 	m.sizeBytes += recordSize(r)
 }
 
+// snapshot returns a point-in-time copy of m.records under RLock.
+func (m *Memtable) snapshot() []record.Record {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s := make([]record.Record, len(m.records))
+	copy(s, m.records)
+	return s
+}
+
 // Scan returns an Iterator over records with Timestamp in [start, end), optionally
 // filtered to sourceID (nil means all sources). The snapshot is isolated from
 // subsequent Append calls.
 func (m *Memtable) Scan(start, end int64, sourceID []byte) record.Iterator {
-	m.mu.RLock()
-	snapshot := make([]record.Record, len(m.records))
-	copy(snapshot, m.records)
-	m.mu.RUnlock()
-
+	snapshot := m.snapshot()
 	startIdx := sort.Search(len(snapshot), func(i int) bool {
 		return snapshot[i].Timestamp >= start
 	})
@@ -60,11 +65,7 @@ func (m *Memtable) Scan(start, end int64, sourceID []byte) record.Iterator {
 // Iterator returns an Iterator over all records in sorted order.
 // Used during flush to SSTable.
 func (m *Memtable) Iterator() record.Iterator {
-	m.mu.RLock()
-	snapshot := make([]record.Record, len(m.records))
-	copy(snapshot, m.records)
-	m.mu.RUnlock()
-	return &iterator{records: snapshot, pos: -1, end: math.MaxInt64}
+	return &iterator{records: m.snapshot(), pos: -1, end: math.MaxInt64}
 }
 
 // ApproximateSize returns the cumulative byte size of all records
@@ -78,11 +79,7 @@ func (m *Memtable) ApproximateSize() int64 {
 // Freeze returns a sorted Iterator over a point-in-time snapshot of the buffer.
 // The snapshot is isolated from subsequent Append calls and is used during SSTable flush.
 func (m *Memtable) Freeze() record.Iterator {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	snapshot := make([]record.Record, len(m.records))
-	copy(snapshot, m.records)
-	return &iterator{records: snapshot, pos: -1, end: math.MaxInt64}
+	return &iterator{records: m.snapshot(), pos: -1, end: math.MaxInt64}
 }
 
 // iterator is a forward-only cursor over a sorted record slice.
@@ -114,6 +111,7 @@ func (it *iterator) Next() bool {
 
 func (it *iterator) Record() record.Record { return it.current }
 func (it *iterator) Close() error          { return nil }
+func (it *iterator) Err() error            { return nil }
 
 // insertionPoint returns the index at which r should be inserted to maintain
 // (Timestamp, SourceID) ascending order.

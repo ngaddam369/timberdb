@@ -28,6 +28,7 @@ func drainEngine(t *testing.T, e *engine.Engine, start, end time.Time) []record.
 	for it.Next() {
 		out = append(out, it.Record())
 	}
+	require.NoError(t, it.Err())
 	return out
 }
 

@@ -217,9 +217,11 @@ type scanIterator struct {
 	records  []record.Record
 	pos      int
 	current  record.Record
+	err      error
 }
 
-// Next advances to the next matching record. Returns false when exhausted.
+// Next advances to the next matching record. Returns false when exhausted or
+// when a read error occurs; check Err() to distinguish the two.
 func (it *scanIterator) Next() bool {
 	for {
 		for it.pos < len(it.records) {
@@ -248,6 +250,7 @@ func (it *scanIterator) Next() bool {
 
 		records, err := it.r.readBlock(it.blockIdx)
 		if err != nil {
+			it.err = err
 			return false
 		}
 		it.records = records
@@ -265,9 +268,13 @@ func (it *scanIterator) Close() error {
 	return nil
 }
 
+// Err returns the first read error encountered during iteration, or nil.
+func (it *scanIterator) Err() error { return it.err }
+
 // emptyIter is a record.Iterator that is immediately exhausted.
 type emptyIter struct{}
 
 func (emptyIter) Next() bool            { return false }
 func (emptyIter) Record() record.Record { return record.Record{} }
 func (emptyIter) Close() error          { return nil }
+func (emptyIter) Err() error            { return nil }

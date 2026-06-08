@@ -54,10 +54,12 @@ func TestMetricsIntegration(t *testing.T) {
 			}))
 		}
 
-		// Give the background flusher time to complete.
-		time.Sleep(200 * time.Millisecond)
-
+		// Poll until all flushes are complete.
 		m := e.Metrics()
+		require.Eventually(t, func() bool {
+			return gatherCounter(t, m, "timberdb_memtable_flushes_total") >= float64(1)
+		}, 5*time.Second, 10*time.Millisecond, "flush did not complete within timeout")
+
 		assert.Equal(t, float64(n), gatherCounter(t, m, "timberdb_appends_total"))
 		assert.Equal(t, float64(n), gatherCounter(t, m, "timberdb_wal_writes_total"))
 		assert.GreaterOrEqual(t, gatherCounter(t, m, "timberdb_memtable_flushes_total"), float64(1))
@@ -70,8 +72,10 @@ func TestMetricsIntegration(t *testing.T) {
 		opts.MemtableSizeBytes = 1
 
 		e := openEngine(t, dir, opts)
+		m := e.Metrics()
 
-		// Write records at the start of a future hour.
+		// Write records at the start of a future hour, waiting for each flush before
+		// the next append so they produce distinct SSTables.
 		base := time.Now().Add(time.Hour).Truncate(time.Hour)
 		for i := range 3 {
 			require.NoError(t, e.Append(record.Record{
@@ -79,7 +83,10 @@ func TestMetricsIntegration(t *testing.T) {
 				SourceID:  []byte("src"),
 				Payload:   []byte("p"),
 			}))
-			time.Sleep(100 * time.Millisecond) // wait for each flush
+			expected := float64(i + 1)
+			require.Eventually(t, func() bool {
+				return gatherCounter(t, m, "timberdb_memtable_flushes_total") >= expected
+			}, 2*time.Second, 5*time.Millisecond, "flush %d did not complete within timeout", i+1)
 		}
 
 		// Scan the last minute of the same partition window. The SSTable files have
@@ -91,8 +98,8 @@ func TestMetricsIntegration(t *testing.T) {
 		t.Cleanup(func() { require.NoError(t, it.Close()) })
 		for it.Next() {
 		}
+		require.NoError(t, it.Err())
 
-		m := e.Metrics()
 		assert.Greater(t, gatherCounter(t, m, "timberdb_sstable_skips_total"), float64(0))
 		assert.Equal(t, float64(0), gatherCounter(t, m, "timberdb_sstable_reads_total"))
 	})
@@ -105,22 +112,27 @@ func TestMetricsIntegration(t *testing.T) {
 		opts.CompactionCheckInterval = 20 * time.Millisecond
 
 		e := openEngine(t, dir, opts)
+		m := e.Metrics()
 		base := time.Now().Add(time.Hour).Truncate(time.Hour)
 
-		// Append 3 records with a flush gap between each so the flusher produces
-		// three distinct SSTables. With MaxFilesPerPartition=2, the third SSTable
-		// triggers compaction.
+		// Append 3 records, waiting for each flush so the flusher produces three
+		// distinct SSTables. With MaxFilesPerPartition=2, the third triggers compaction.
 		for i := range 3 {
 			require.NoError(t, e.Append(record.Record{
 				Timestamp: base.Add(time.Duration(i) * time.Second).UnixNano(),
 				SourceID:  []byte("src"),
 				Payload:   []byte("p"),
 			}))
-			time.Sleep(100 * time.Millisecond) // let the flusher process this record
+			expected := float64(i + 1)
+			require.Eventually(t, func() bool {
+				return gatherCounter(t, m, "timberdb_memtable_flushes_total") >= expected
+			}, 2*time.Second, 5*time.Millisecond, "flush %d did not complete within timeout", i+1)
 		}
-		time.Sleep(200 * time.Millisecond) // let the compactor run
 
-		m := e.Metrics()
+		require.Eventually(t, func() bool {
+			return gatherCounter(t, m, "timberdb_compactions_total") >= float64(1)
+		}, 5*time.Second, 10*time.Millisecond, "compaction did not run within timeout")
+
 		assert.GreaterOrEqual(t, gatherCounter(t, m, "timberdb_compactions_total"), float64(1))
 	})
 
@@ -135,6 +147,7 @@ func TestMetricsIntegration(t *testing.T) {
 		opts.RetentionCheckInterval = 20 * time.Millisecond
 
 		e := openEngine(t, dir, opts)
+		m := e.Metrics()
 
 		now := time.Now()
 		for i := range 3 {
@@ -144,9 +157,11 @@ func TestMetricsIntegration(t *testing.T) {
 				Payload:   []byte("p"),
 			}))
 		}
-		time.Sleep(300 * time.Millisecond)
 
-		m := e.Metrics()
+		require.Eventually(t, func() bool {
+			return gatherCounter(t, m, "timberdb_files_expired_total") >= float64(1)
+		}, 5*time.Second, 10*time.Millisecond, "retention did not run within timeout")
+
 		assert.GreaterOrEqual(t, gatherCounter(t, m, "timberdb_files_expired_total"), float64(1))
 		assert.Greater(t, gatherCounter(t, m, "timberdb_bytes_reclaimed_total"), float64(0))
 	})
