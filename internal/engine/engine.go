@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ngaddam369/timberdb/internal/compaction"
 	"github.com/ngaddam369/timberdb/internal/manifest"
 	"github.com/ngaddam369/timberdb/internal/partition"
 	"github.com/ngaddam369/timberdb/internal/record"
@@ -37,10 +38,17 @@ type Engine struct {
 	files        map[partition.PartitionWindow][]*sstable.Reader
 	maxFlushedTS map[partition.PartitionWindow]int64 // highest ts already in an SSTable
 	flushCh      chan *partition.TimePartition
+	compactCh    chan partition.PartitionWindow // signals runCompactor after each flush
 	closeCh      chan struct{}
 	wg           sync.WaitGroup
 	walSeq       int
-	closed       bool
+	compactSeq   int
+	// closedReaders holds readers whose underlying files were deleted by compaction or
+	// retention. They are closed on engine shutdown to avoid use-after-free during
+	// in-flight scans that may still hold iterators from those readers.
+	closedReaders []*sstable.Reader
+	strategy      *compaction.FIFOStrategy
+	closed        bool
 }
 
 // Open opens or creates a timberdb store at dir with the given options.
@@ -64,7 +72,9 @@ func Open(dir string, opts Options) (*Engine, error) {
 		files:        make(map[partition.PartitionWindow][]*sstable.Reader),
 		maxFlushedTS: make(map[partition.PartitionWindow]int64),
 		flushCh:      make(chan *partition.TimePartition, 16),
+		compactCh:    make(chan partition.PartitionWindow, 16),
 		closeCh:      make(chan struct{}),
+		strategy:     &compaction.FIFOStrategy{MaxFilesPerPartition: opts.MaxFilesPerPartition},
 	}
 
 	// Replay manifest — open all live SSTables and track maxFlushedTS per window.
@@ -168,6 +178,7 @@ func Open(dir string, opts Options) (*Engine, error) {
 	e.wal = activeWAL
 
 	e.wg.Go(e.runFlusher)
+	e.wg.Go(e.runCompactor)
 	return e, nil
 }
 
@@ -274,6 +285,11 @@ func (e *Engine) Close() error {
 			}
 		}
 	}
+	for _, r := range e.closedReaders {
+		if err := r.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	e.mu.Unlock()
 
 	if err := e.manifest.Close(); err != nil && firstErr == nil {
@@ -370,9 +386,214 @@ func (e *Engine) flushPartition(p *partition.TimePartition) error {
 	}
 	e.mu.Unlock()
 
+	// Signal the compactor so it can check immediately rather than waiting for the ticker.
+	select {
+	case e.compactCh <- p.Window:
+	default:
+	}
+
 	return nil
 }
 
 func (e *Engine) walPath(seq int) string {
 	return filepath.Join(e.dir, fmt.Sprintf("wal-%06d.wal", seq))
+}
+
+func (e *Engine) runCompactor() {
+	compactTicker := time.NewTicker(e.opts.CompactionCheckInterval)
+	defer compactTicker.Stop()
+
+	var retentionCh <-chan time.Time
+	if e.opts.RetentionDuration > 0 {
+		rt := time.NewTicker(e.opts.RetentionCheckInterval)
+		defer rt.Stop()
+		retentionCh = rt.C
+	}
+
+	for {
+		select {
+		case <-e.closeCh:
+			return
+		case win := <-e.compactCh:
+			e.maybeCompact(win)
+		case <-compactTicker.C:
+			e.sweepCompaction()
+		case <-retentionCh:
+			e.sweepRetention()
+		}
+	}
+}
+
+func (e *Engine) sweepCompaction() {
+	e.mu.RLock()
+	windows := make([]partition.PartitionWindow, 0, len(e.files))
+	for win := range e.files {
+		windows = append(windows, win)
+	}
+	e.mu.RUnlock()
+
+	for _, win := range windows {
+		e.maybeCompact(win)
+	}
+}
+
+func (e *Engine) maybeCompact(win partition.PartitionWindow) {
+	e.mu.RLock()
+	readers := make([]*sstable.Reader, len(e.files[win]))
+	copy(readers, e.files[win])
+	e.mu.RUnlock()
+
+	if len(readers) == 0 {
+		return
+	}
+
+	metas := make([]sstable.SSTableMeta, len(readers))
+	for i, r := range readers {
+		metas[i] = r.Meta()
+	}
+
+	if e.strategy.PickMerge(win, metas) == nil {
+		return
+	}
+
+	e.mu.Lock()
+	e.compactSeq++
+	seq := e.compactSeq
+	e.mu.Unlock()
+
+	outputPath := filepath.Join(e.dir, fmt.Sprintf("%d-compact-%06d.sst", win.Start, seq))
+	wopts := sstable.WriterOptions{
+		BlockSizeBytes: e.opts.BlockSizeBytes,
+		IndexSources:   e.opts.IndexSources,
+		PartitionStart: win.Start,
+		PartitionEnd:   win.End,
+	}
+
+	merged, err := compaction.Merge(readers, outputPath, wopts, e.manifest)
+	if err != nil {
+		slog.Error("engine: compaction failed", "window", win.Start, "err", err)
+		return
+	}
+
+	mergedPaths := make(map[string]struct{}, len(readers))
+	for _, r := range readers {
+		mergedPaths[r.Meta().Path] = struct{}{}
+	}
+
+	e.mu.Lock()
+	current := e.files[win]
+	survived := make([]*sstable.Reader, 0, len(current))
+	var toClose []*sstable.Reader
+	for _, r := range current {
+		if _, wasCompacted := mergedPaths[r.Meta().Path]; wasCompacted {
+			toClose = append(toClose, r)
+		} else {
+			survived = append(survived, r)
+		}
+	}
+	e.files[win] = append(survived, merged)
+	e.closedReaders = append(e.closedReaders, toClose...)
+	e.mu.Unlock()
+}
+
+func (e *Engine) sweepRetention() {
+	if e.opts.RetentionDuration == 0 {
+		return
+	}
+	horizon := time.Now().Add(-e.opts.RetentionDuration).UnixNano()
+
+	type candidate struct {
+		win            partition.PartitionWindow
+		expiredReaders []*sstable.Reader
+		expiredMetas   []sstable.SSTableMeta
+	}
+
+	e.mu.RLock()
+	var candidates []candidate
+	for win, readers := range e.files {
+		metas := make([]sstable.SSTableMeta, len(readers))
+		for i, r := range readers {
+			metas[i] = r.Meta()
+		}
+		expired := e.strategy.PickExpired(metas, horizon)
+		if len(expired) == 0 {
+			continue
+		}
+		expiredPaths := make(map[string]struct{}, len(expired))
+		for _, m := range expired {
+			expiredPaths[m.Path] = struct{}{}
+		}
+		var expReaders []*sstable.Reader
+		for _, r := range readers {
+			if _, ok := expiredPaths[r.Meta().Path]; ok {
+				expReaders = append(expReaders, r)
+			}
+		}
+		candidates = append(candidates, candidate{win: win, expiredReaders: expReaders, expiredMetas: expired})
+	}
+	e.mu.RUnlock()
+
+	for _, c := range candidates {
+		e.retireWindow(c.win, c.expiredReaders, c.expiredMetas)
+	}
+}
+
+func (e *Engine) retireWindow(win partition.PartitionWindow, expiredReaders []*sstable.Reader, expiredMetas []sstable.SSTableMeta) {
+	deletedFiles := make([]manifest.FileEntry, len(expiredMetas))
+	for i, m := range expiredMetas {
+		deletedFiles[i] = manifest.FileEntry{
+			Path:           m.Path,
+			PartitionStart: m.PartitionStart,
+			PartitionEnd:   m.PartitionEnd,
+			MinTimestamp:   m.MinTimestamp,
+			MaxTimestamp:   m.MaxTimestamp,
+			RecordCount:    m.RecordCount,
+		}
+	}
+	if err := e.manifest.Append(manifest.VersionEdit{DeletedFiles: deletedFiles}); err != nil {
+		slog.Error("engine: retention manifest update failed", "window", win.Start, "err", err)
+		return
+	}
+
+	for _, m := range expiredMetas {
+		if err := os.Remove(m.Path); err != nil && !os.IsNotExist(err) {
+			slog.Error("engine: retention file delete failed", "path", m.Path, "err", err)
+		}
+	}
+
+	expiredPaths := make(map[string]struct{}, len(expiredReaders))
+	for _, r := range expiredReaders {
+		expiredPaths[r.Meta().Path] = struct{}{}
+	}
+
+	var windowEmpty bool
+	e.mu.Lock()
+	current := e.files[win]
+	survived := make([]*sstable.Reader, 0, len(current))
+	var toClose []*sstable.Reader
+	for _, r := range current {
+		if _, wasExpired := expiredPaths[r.Meta().Path]; wasExpired {
+			toClose = append(toClose, r)
+		} else {
+			survived = append(survived, r)
+		}
+	}
+	if len(survived) == 0 {
+		delete(e.files, win)
+		delete(e.maxFlushedTS, win)
+		windowEmpty = true
+	} else {
+		e.files[win] = survived
+	}
+	e.closedReaders = append(e.closedReaders, toClose...)
+	e.mu.Unlock()
+
+	if windowEmpty {
+		for _, p := range e.router.All() {
+			if p.Window == win && p.State() == partition.StateSealed {
+				p.MarkDeleted()
+				break
+			}
+		}
+	}
 }

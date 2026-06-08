@@ -35,6 +35,10 @@ type Options struct {
 	RetentionDuration time.Duration
 	// RetentionCheckInterval controls how often the TTL enforcer runs (default: 1h).
 	RetentionCheckInterval time.Duration
+	// CompactionCheckInterval controls how often the compactor sweeps all partitions
+	// for merge eligibility (default: 30s). Compaction is also triggered immediately
+	// after each flush via an internal signal.
+	CompactionCheckInterval time.Duration
 	// MetricsAddr is the address on which the Prometheus /metrics endpoint is
 	// served. Empty string disables the endpoint (default: ":9090").
 	MetricsAddr string
@@ -43,16 +47,17 @@ type Options struct {
 // DefaultOptions returns a production-ready Options with conservative defaults.
 func DefaultOptions() Options {
 	return Options{
-		PartitionDuration:      time.Hour,
-		LateArrivalWindow:      5 * time.Minute,
-		LateArrivalMode:        partition.Strict,
-		MemtableSizeBytes:      64 << 20, // 64 MiB
-		WALSyncMode:            wal.SyncAlways,
-		BlockSizeBytes:         32 << 10, // 32 KiB
-		IndexSources:           false,
-		MaxFilesPerPartition:   10,
-		RetentionDuration:      0,
-		RetentionCheckInterval: time.Hour,
-		MetricsAddr:            ":9090",
+		PartitionDuration:       time.Hour,
+		LateArrivalWindow:       5 * time.Minute,
+		LateArrivalMode:         partition.Strict,
+		MemtableSizeBytes:       64 << 20, // 64 MiB
+		WALSyncMode:             wal.SyncAlways,
+		BlockSizeBytes:          32 << 10, // 32 KiB
+		IndexSources:            false,
+		MaxFilesPerPartition:    10,
+		RetentionDuration:       0,
+		RetentionCheckInterval:  time.Hour,
+		CompactionCheckInterval: 30 * time.Second,
+		MetricsAddr:             ":9090",
 	}
 }
