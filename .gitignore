@@ -1,5 +1,6 @@
 bin/
 /timberdb
+/vendor
 coverage.out
 /tmp/timberdb-bench
 *.db
