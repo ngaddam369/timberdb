@@ -136,6 +136,40 @@ func TestMetricsIntegration(t *testing.T) {
 		assert.GreaterOrEqual(t, gatherCounter(t, m, "timberdb_compactions_total"), float64(1))
 	})
 
+	t.Run("wa_counters", func(t *testing.T) {
+		dir := t.TempDir()
+		opts := engine.DefaultOptions()
+		opts.MemtableSizeBytes = 1
+		opts.MaxFilesPerPartition = 2
+		opts.CompactionCheckInterval = 20 * time.Millisecond
+
+		e := openEngine(t, dir, opts)
+		m := e.Metrics()
+		base := time.Now().Add(time.Hour).Truncate(time.Hour)
+
+		// Write 3 records, each forcing a flush, then wait for compaction.
+		for i := range 3 {
+			require.NoError(t, e.Append(record.Record{
+				Timestamp: base.Add(time.Duration(i) * time.Second).UnixNano(),
+				SourceID:  []byte("src"),
+				Payload:   []byte("payload"),
+			}))
+			expected := float64(i + 1)
+			require.Eventually(t, func() bool {
+				return gatherCounter(t, m, "timberdb_memtable_flushes_total") >= expected
+			}, 2*time.Second, 5*time.Millisecond, "flush %d did not complete within timeout", i+1)
+		}
+
+		require.Eventually(t, func() bool {
+			return gatherCounter(t, m, "timberdb_compactions_total") >= float64(1)
+		}, 5*time.Second, 10*time.Millisecond, "compaction did not run within timeout")
+
+		assert.Greater(t, gatherCounter(t, m, "timberdb_bytes_flushed_total"), float64(0),
+			"bytes_flushed_total must be > 0 after at least one flush")
+		assert.Greater(t, gatherCounter(t, m, "timberdb_bytes_compacted_total"), float64(0),
+			"bytes_compacted_total must be > 0 after at least one compaction")
+	})
+
 	t.Run("retention_reclaimed", func(t *testing.T) {
 		dir := t.TempDir()
 		opts := engine.DefaultOptions()

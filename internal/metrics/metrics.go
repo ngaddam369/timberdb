@@ -30,6 +30,8 @@ type Metrics struct {
 	CompactionsTotal    prometheus.Counter
 	FilesExpiredTotal   prometheus.Counter
 	BytesReclaimedTotal prometheus.Counter
+	BytesFlushedTotal   prometheus.Counter
+	BytesCompactedTotal prometheus.Counter
 
 	// Gauges
 	ActivePartitions   prometheus.Gauge
@@ -99,6 +101,14 @@ func New() *Metrics {
 			Name: "timberdb_bytes_reclaimed_total",
 			Help: "Total bytes freed by the retention enforcer.",
 		}),
+		BytesFlushedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "timberdb_bytes_flushed_total",
+			Help: "Total bytes written to SSTables during memtable flushes.",
+		}),
+		BytesCompactedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "timberdb_bytes_compacted_total",
+			Help: "Total bytes written to SSTables during compaction merges.",
+		}),
 		ActivePartitions: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "timberdb_active_partitions",
 			Help: "Current number of partitions tracked by the router.",
@@ -141,6 +151,8 @@ func New() *Metrics {
 		m.CompactionsTotal,
 		m.FilesExpiredTotal,
 		m.BytesReclaimedTotal,
+		m.BytesFlushedTotal,
+		m.BytesCompactedTotal,
 		m.ActivePartitions,
 		m.SSTFilesTotal,
 		m.SSTBytesTotal,

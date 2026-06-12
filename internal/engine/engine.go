@@ -357,11 +357,23 @@ func (e *Engine) runFlusher() {
 }
 
 func (e *Engine) flushPartition(p *partition.TimePartition) error {
-	e.mu.RLock()
-	walSeq := e.walSeq
-	e.mu.RUnlock()
+	// Rotate the WAL before snapshotting the memtable. This guarantees every record in
+	// the old WAL segment is captured in the SSTable snapshot: records appended
+	// concurrently between rotation and SwapMemtable land in both the new WAL and the
+	// old memtable, so they appear in the SSTable and are skipped on future WAL replays
+	// via maxFlushedTS. Without this ordering, records written to the old WAL after
+	// SwapMemtable would be lost on crash once the old WAL is deleted.
+	e.mu.Lock()
+	oldWALPath := e.walPath(e.walSeq)
+	e.walSeq++
+	newWALSeq := e.walSeq
+	e.mu.Unlock()
 
-	sstPath := filepath.Join(e.dir, fmt.Sprintf("%d-%06d.sst", p.Window.Start, walSeq))
+	if err := e.wal.Rotate(e.walPath(newWALSeq)); err != nil {
+		return err
+	}
+
+	sstPath := filepath.Join(e.dir, fmt.Sprintf("%d-%06d.sst", p.Window.Start, newWALSeq))
 	wopts := sstable.WriterOptions{
 		BlockSizeBytes: e.opts.BlockSizeBytes,
 		IndexSources:   e.opts.IndexSources,
@@ -416,18 +428,11 @@ func (e *Engine) flushPartition(p *partition.TimePartition) error {
 	if fi, serr := os.Stat(sstPath); serr == nil {
 		e.metrics.SSTFilesTotal.Add(1)
 		e.metrics.SSTBytesTotal.Add(float64(fi.Size()))
+		e.metrics.BytesFlushedTotal.Add(float64(fi.Size()))
 	}
 
-	// Rotate the WAL so the next segment only contains post-flush records.
-	e.mu.Lock()
-	oldWALPath := e.walPath(e.walSeq)
-	e.walSeq++
-	newWALPath := e.walPath(e.walSeq)
-	e.mu.Unlock()
-
-	if err := e.wal.Rotate(newWALPath); err != nil {
-		return err
-	}
+	// Delete the old WAL segment. The rotation was done before SwapMemtable, so every
+	// record in the old segment is now in the SSTable and safe to remove.
 	if err := os.Remove(oldWALPath); err != nil && !os.IsNotExist(err) {
 		slog.Error("engine: remove old WAL segment failed", "path", oldWALPath, "err", err)
 	}
@@ -550,6 +555,7 @@ func (e *Engine) maybeCompact(win partition.PartitionWindow) {
 	}
 	e.metrics.SSTFilesTotal.Add(float64(1 - len(readers)))
 	e.metrics.SSTBytesTotal.Add(outputBytes - inputBytes)
+	e.metrics.BytesCompactedTotal.Add(outputBytes)
 
 	mergedPaths := make(map[string]struct{}, len(readers))
 	for _, r := range readers {

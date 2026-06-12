@@ -78,6 +78,11 @@ func TestCompactionIntegration(t *testing.T) {
 
 		require.Eventually(t, func() bool {
 			ssts, _ := filepath.Glob(filepath.Join(dir, "*.sst"))
+			return len(ssts) >= 1
+		}, 5*time.Second, 10*time.Millisecond, "flush must produce at least one SST before retention check")
+
+		require.Eventually(t, func() bool {
+			ssts, _ := filepath.Glob(filepath.Join(dir, "*.sst"))
 			return len(ssts) == 0
 		}, 5*time.Second, 10*time.Millisecond, "SSTs not deleted by retention within timeout")
 
@@ -153,6 +158,11 @@ func TestCompactionIntegration(t *testing.T) {
 				Payload:   []byte("p"),
 			}))
 		}
+
+		require.Eventually(t, func() bool {
+			ssts, _ := filepath.Glob(filepath.Join(dir, "*.sst"))
+			return len(ssts) >= 1
+		}, 5*time.Second, 10*time.Millisecond, "flush must produce at least one SST before retention check")
 
 		require.Eventually(t, func() bool {
 			ssts, _ := filepath.Glob(filepath.Join(dir, "*.sst"))
