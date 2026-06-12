@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"hash/crc32"
 	"io"
 	"os"
@@ -126,10 +127,11 @@ func (m *Manifest) Replay(fn func(VersionEdit)) (retErr error) {
 
 	br := bufio.NewReader(f)
 	var maxSeq uint64
+	var validBytes int64
 	for {
 		var hdr [8]byte
 		if _, err := io.ReadFull(br, hdr[:]); err != nil {
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				break
 			}
 			return err
@@ -142,7 +144,7 @@ func (m *Manifest) Replay(fn func(VersionEdit)) (retErr error) {
 
 		body := make([]byte, bodyLen)
 		if _, err := io.ReadFull(br, body); err != nil {
-			if err == io.ErrUnexpectedEOF {
+			if errors.Is(err, io.ErrUnexpectedEOF) {
 				break
 			}
 			return err
@@ -164,10 +166,16 @@ func (m *Manifest) Replay(fn func(VersionEdit)) (retErr error) {
 		if edit.Seq > maxSeq {
 			maxSeq = edit.Seq
 		}
+		validBytes += int64(8 + bodyLen)
 	}
 
 	m.mu.Lock()
 	m.seq = maxSeq
+	// Truncate any corrupt tail so the next Append starts at the right offset.
+	if err := m.f.Truncate(validBytes); err != nil {
+		m.mu.Unlock()
+		return err
+	}
 	m.mu.Unlock()
 	return nil
 }

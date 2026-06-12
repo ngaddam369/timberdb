@@ -12,6 +12,7 @@ package wal
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"io"
 	"log/slog"
@@ -129,7 +130,7 @@ func (w *WAL) Replay(fn func(record.Record)) (retErr error) {
 	for {
 		var header [8]byte
 		if _, err := io.ReadFull(br, header[:]); err != nil {
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				return nil // clean end or truncated header = partial write
 			}
 			return err
@@ -142,7 +143,7 @@ func (w *WAL) Replay(fn func(record.Record)) (retErr error) {
 
 		body := make([]byte, bodyLen)
 		if _, err := io.ReadFull(br, body); err != nil {
-			if err == io.ErrUnexpectedEOF {
+			if errors.Is(err, io.ErrUnexpectedEOF) {
 				return nil // partial body = partial write
 			}
 			return err

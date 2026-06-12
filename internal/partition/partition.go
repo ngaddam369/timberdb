@@ -34,20 +34,18 @@ func (w PartitionWindow) Overlaps(start, end int64) bool {
 // TimePartition owns all in-memory state for a single time window.
 // All methods are safe for concurrent use.
 type TimePartition struct {
-	Window  PartitionWindow
-	WALPath string
-	mu      sync.RWMutex
-	state   State
-	mem     *memtable.Memtable
+	Window PartitionWindow
+	mu     sync.RWMutex
+	state  State
+	mem    *memtable.Memtable
 }
 
 // NewPartition creates a new open partition for the given window.
-func NewPartition(window PartitionWindow, walPath string) *TimePartition {
+func NewPartition(window PartitionWindow) *TimePartition {
 	return &TimePartition{
-		Window:  window,
-		WALPath: walPath,
-		state:   StateOpen,
-		mem:     memtable.New(),
+		Window: window,
+		state:  StateOpen,
+		mem:    memtable.New(),
 	}
 }
 
@@ -117,10 +115,4 @@ func (p *TimePartition) State() State {
 // meaning no further on-time writes can arrive for this partition.
 func (p *TimePartition) IsSealable(now time.Time, lateArrivalWindow time.Duration) bool {
 	return now.UnixNano() > p.Window.End+lateArrivalWindow.Nanoseconds()
-}
-
-// IsExpired reports whether the entire partition window is older than the retention horizon,
-// making it eligible for bulk deletion by the TTL enforcer.
-func (p *TimePartition) IsExpired(retentionHorizon int64) bool {
-	return p.Window.End < retentionHorizon
 }

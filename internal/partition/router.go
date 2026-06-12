@@ -13,7 +13,7 @@ type LateArrivalMode int
 const (
 	// Strict rejects late-arriving records with ErrLateArrival.
 	Strict LateArrivalMode = iota
-	// Tolerant routes late-arriving records to a dedicated late-arrival partition
+	// Tolerant routes late-arriving records to their natural time-window partition
 	// rather than rejecting them.
 	Tolerant
 )
@@ -34,33 +34,26 @@ type Router struct {
 	windowDuration    time.Duration
 	lateArrivalWindow time.Duration
 	lateArrivalMode   LateArrivalMode
-	latePartition     *TimePartition // non-nil only in Tolerant mode
 }
 
 // NewRouter creates a Router with the given time-window duration and late-arrival policy.
 func NewRouter(windowDuration, lateArrivalWindow time.Duration, mode LateArrivalMode) *Router {
-	r := &Router{
+	return &Router{
 		partitions:        make(map[PartitionWindow]*TimePartition),
 		windowDuration:    windowDuration,
 		lateArrivalWindow: lateArrivalWindow,
 		lateArrivalMode:   mode,
 	}
-	if mode == Tolerant {
-		r.latePartition = NewPartition(PartitionWindow{}, "late.wal")
-	}
-	return r
 }
 
 // Route returns the TimePartition for the given timestamp, creating it if necessary.
 // Returns ErrLateArrival when the timestamp is outside the late-arrival window and
-// the mode is Strict.
+// the mode is Strict. In Tolerant mode, late records are routed to their natural
+// time-window partition so they are flushed and scanned like any other record.
 func (r *Router) Route(timestamp int64) (*TimePartition, error) {
 	horizon := time.Now().UnixNano() - r.lateArrivalWindow.Nanoseconds()
-	if timestamp < horizon {
-		if r.lateArrivalMode == Strict {
-			return nil, ErrLateArrival
-		}
-		return r.latePartition, nil
+	if timestamp < horizon && r.lateArrivalMode == Strict {
+		return nil, ErrLateArrival
 	}
 
 	win := r.windowFor(timestamp)
@@ -77,7 +70,7 @@ func (r *Router) Route(timestamp int64) (*TimePartition, error) {
 	if p, ok = r.partitions[win]; ok { // re-check after acquiring write lock
 		return p, nil
 	}
-	p = NewPartition(win, "")
+	p = NewPartition(win)
 	r.partitions[win] = p
 	return p, nil
 }

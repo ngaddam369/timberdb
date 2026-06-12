@@ -16,6 +16,7 @@ import (
 
 func openTestEngine(t *testing.T, opts Options) *Engine {
 	t.Helper()
+	opts.MetricsAddr = ""
 	e, err := Open(t.TempDir(), opts)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
@@ -128,6 +129,7 @@ func TestEngine(t *testing.T) {
 
 	t.Run("flush_triggered", func(t *testing.T) {
 		opts := DefaultOptions()
+		opts.MetricsAddr = ""
 		opts.MemtableSizeBytes = 1 // flush after every append
 
 		dir := t.TempDir()

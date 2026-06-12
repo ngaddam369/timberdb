@@ -107,6 +107,9 @@ func newBenchCmd() *cobra.Command {
 						if err == nil {
 							for it.Next() {
 							}
+							if err := it.Err(); err != nil {
+								slog.Error("scan iterator error", "err", err)
+							}
 							if cerr := it.Close(); cerr != nil {
 								slog.Error("scan iterator close", "err", cerr)
 							}

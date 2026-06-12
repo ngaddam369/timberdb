@@ -97,7 +97,7 @@ func Open(dir string, opts Options) (*Engine, error) {
 			}
 			// Register an empty partition for this window so router.Overlapping
 			// returns it during Scan even if WAL replay adds no new records.
-			e.router.AddPartition(partition.NewPartition(win, ""))
+			e.router.AddPartition(partition.NewPartition(win))
 		}
 		for _, fe := range edit.DeletedFiles {
 			win := partition.PartitionWindow{Start: fe.PartitionStart, End: fe.PartitionEnd}
@@ -370,6 +370,9 @@ func (e *Engine) flushPartition(p *partition.TimePartition) error {
 	e.mu.Unlock()
 
 	if err := e.wal.Rotate(e.walPath(newWALSeq)); err != nil {
+		e.mu.Lock()
+		e.walSeq-- // roll back the seq increment on rotation failure
+		e.mu.Unlock()
 		return err
 	}
 
@@ -488,6 +491,7 @@ func (e *Engine) runCompactor() {
 }
 
 func (e *Engine) sweepCompaction() {
+	e.router.SealExpired(time.Now())
 	e.mu.RLock()
 	windows := make([]partition.PartitionWindow, 0, len(e.files))
 	for win := range e.files {
@@ -515,8 +519,21 @@ func (e *Engine) maybeCompact(win partition.PartitionWindow) {
 		metas[i] = r.Meta()
 	}
 
-	if e.strategy.PickMerge(win, metas) == nil {
+	job := e.strategy.PickMerge(win, metas)
+	if job == nil {
 		return
+	}
+
+	// Filter to only the readers selected by the strategy.
+	inputPaths := make(map[string]struct{}, len(job.Inputs))
+	for _, m := range job.Inputs {
+		inputPaths[m.Path] = struct{}{}
+	}
+	selected := make([]*sstable.Reader, 0, len(job.Inputs))
+	for _, r := range readers {
+		if _, ok := inputPaths[r.Meta().Path]; ok {
+			selected = append(selected, r)
+		}
 	}
 
 	e.mu.Lock()
@@ -534,14 +551,14 @@ func (e *Engine) maybeCompact(win partition.PartitionWindow) {
 
 	// Stat input files before Merge deletes them from disk.
 	var inputBytes float64
-	for _, r := range readers {
+	for _, r := range selected {
 		if fi, serr := os.Stat(r.Meta().Path); serr == nil {
 			inputBytes += float64(fi.Size())
 		}
 	}
 
 	compactStart := time.Now()
-	merged, err := compaction.Merge(readers, outputPath, wopts, e.manifest)
+	merged, err := compaction.Merge(selected, outputPath, wopts, e.manifest)
 	if err != nil {
 		slog.Error("engine: compaction failed", "window", win.Start, "err", err)
 		return
@@ -553,12 +570,12 @@ func (e *Engine) maybeCompact(win partition.PartitionWindow) {
 	if fi, serr := os.Stat(outputPath); serr == nil {
 		outputBytes = float64(fi.Size())
 	}
-	e.metrics.SSTFilesTotal.Add(float64(1 - len(readers)))
+	e.metrics.SSTFilesTotal.Add(float64(1 - len(selected)))
 	e.metrics.SSTBytesTotal.Add(outputBytes - inputBytes)
 	e.metrics.BytesCompactedTotal.Add(outputBytes)
 
-	mergedPaths := make(map[string]struct{}, len(readers))
-	for _, r := range readers {
+	mergedPaths := make(map[string]struct{}, len(selected))
+	for _, r := range selected {
 		mergedPaths[r.Meta().Path] = struct{}{}
 	}
 

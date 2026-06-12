@@ -62,12 +62,6 @@ func (m *Memtable) Scan(start, end int64, sourceID []byte) record.Iterator {
 	}
 }
 
-// Iterator returns an Iterator over all records in sorted order.
-// Used during flush to SSTable.
-func (m *Memtable) Iterator() record.Iterator {
-	return &iterator{records: m.snapshot(), pos: -1, end: math.MaxInt64}
-}
-
 // ApproximateSize returns the cumulative byte size of all records
 // (8B timestamp + len(SourceID) + len(Payload)). Used as a flush trigger.
 func (m *Memtable) ApproximateSize() int64 {

@@ -137,7 +137,7 @@ func BenchmarkTimberDBScan(b *testing.B) {
 
 func BenchmarkBadgerAppend(b *testing.B) {
 	dir := b.TempDir()
-	bopts := badger.DefaultOptions(dir).WithLogger(nil)
+	bopts := badger.DefaultOptions(dir).WithLogger(nil).WithSyncWrites(true)
 	db, err := badger.Open(bopts)
 	if err != nil {
 		b.Fatal(err)
@@ -159,7 +159,7 @@ func BenchmarkBadgerAppend(b *testing.B) {
 
 func BenchmarkBadgerScan(b *testing.B) {
 	dir := b.TempDir()
-	bopts := badger.DefaultOptions(dir).WithLogger(nil)
+	bopts := badger.DefaultOptions(dir).WithLogger(nil).WithSyncWrites(true)
 	db, err := badger.Open(bopts)
 	if err != nil {
 		b.Fatal(err)

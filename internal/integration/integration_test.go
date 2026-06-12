@@ -261,8 +261,8 @@ func TestPartialFlushRecovery(t *testing.T) {
 }
 
 // TestLateArrivalTolerantIntegration verifies that late-arriving records are silently
-// accepted in Tolerant mode, routed to the dedicated late partition, and fully recoverable
-// from the WAL. This exercises the WAL + Router integration for out-of-order data.
+// accepted in Tolerant mode, routed to their natural time-window partition, and fully
+// recoverable from the WAL. This exercises the WAL + Router integration for out-of-order data.
 func TestLateArrivalTolerantIntegration(t *testing.T) {
 	dir := t.TempDir()
 	walPath := filepath.Join(dir, "wal-0.wal")
@@ -316,16 +316,16 @@ func TestLateArrivalTolerantIntegration(t *testing.T) {
 	require.NoError(t, w2.Replay(func(record.Record) { walCount++ }))
 	assert.Equal(t, onTimeCount+lateCount, walCount, "WAL must contain all records including late arrivals")
 
-	// router.All() returns only normal (non-late) partitions. On-time records must be
-	// in exactly those partitions; late records are in the internal late partition and
-	// not visible via All() — their durability is verified via the WAL count above.
-	var onTimeInMemtable int
+	// In Tolerant mode, late records route to their natural time-window partition, so
+	// router.All() includes both the on-time and late-arrival partitions. The total
+	// record count across all partitions must equal onTimeCount + lateCount.
+	var totalInMemtable int
 	for _, p := range router.All() {
 		it := p.Scan(math.MinInt64, math.MaxInt64, nil)
 		for it.Next() {
-			onTimeInMemtable++
+			totalInMemtable++
 		}
 		require.NoError(t, it.Close())
 	}
-	assert.Equal(t, onTimeCount, onTimeInMemtable, "on-time records must be in the regular partitions")
+	assert.Equal(t, onTimeCount+lateCount, totalInMemtable, "all records must be visible in their natural-window partitions")
 }

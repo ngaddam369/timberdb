@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"sort"
@@ -188,12 +189,12 @@ func loadSrcIndex(f *os.File, meta SSTableMeta) (map[string]srcEntry, error) {
 	off := 0
 	for off < len(buf) {
 		if off+4 > len(buf) {
-			break
+			return nil, fmt.Errorf("sstable: corrupt source index")
 		}
 		idLen := int(binary.LittleEndian.Uint32(buf[off:]))
 		off += 4
 		if off+idLen+16 > len(buf) {
-			break
+			return nil, fmt.Errorf("sstable: corrupt source index")
 		}
 		srcID := string(buf[off : off+idLen])
 		off += idLen

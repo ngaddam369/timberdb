@@ -30,11 +30,12 @@ func collectScan(t *testing.T, r *Reader, start, end int64, sourceID []byte) []r
 	t.Helper()
 	it, err := r.Scan(start, end, sourceID)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = it.Close() })
+	t.Cleanup(func() { require.NoError(t, it.Close()) })
 	var out []record.Record
 	for it.Next() {
 		out = append(out, it.Record())
 	}
+	require.NoError(t, it.Err())
 	return out
 }
 

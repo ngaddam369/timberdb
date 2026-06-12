@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"errors"
+	"log/slog"
 	"os"
 	"sort"
 
@@ -203,6 +204,15 @@ func (w *Writer) flushBlock() error {
 // and footer, then fsyncs the file. Returns SSTableMeta for registration in the manifest.
 // The Writer must not be used after Finish.
 func (w *Writer) Finish() (SSTableMeta, error) {
+	var fileClosed bool
+	defer func() {
+		if !fileClosed {
+			if cerr := w.f.Close(); cerr != nil {
+				slog.Error("sstable: close writer file on error", "err", cerr)
+			}
+		}
+	}()
+
 	if err := w.flushBlock(); err != nil {
 		return SSTableMeta{}, err
 	}
@@ -274,6 +284,7 @@ func (w *Writer) Finish() (SSTableMeta, error) {
 	}
 
 	path := w.f.Name()
+	fileClosed = true
 	if err := w.f.Close(); err != nil {
 		return SSTableMeta{}, err
 	}

@@ -77,7 +77,7 @@ func TestSortedInsertion(t *testing.T) {
 				})
 			}
 
-			got := collectAll(t, m.Iterator())
+			got := collectAll(t, m.Freeze())
 			require.Len(t, got, tc.n)
 			assert.True(t, isSorted(got), "records must be in (Timestamp, SourceID) order")
 		})

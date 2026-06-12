@@ -13,11 +13,12 @@ import (
 // collectAll drains an iterator into a slice and closes it.
 func collectAll(t *testing.T, it record.Iterator) []record.Record {
 	t.Helper()
-	defer it.Close()
+	defer func() { require.NoError(t, it.Close()) }()
 	var out []record.Record
 	for it.Next() {
 		out = append(out, it.Record())
 	}
+	require.NoError(t, it.Err())
 	return out
 }
 
@@ -71,7 +72,7 @@ func TestPartitionWindowOverlaps(t *testing.T) {
 
 func TestPartitionAppendAndSeal(t *testing.T) {
 	win := PartitionWindow{Start: 0, End: 1_000}
-	p := NewPartition(win, "")
+	p := NewPartition(win)
 	r := record.Record{Timestamp: 500, SourceID: []byte("s"), Payload: []byte("p")}
 
 	t.Run("accepts_write_when_open", func(t *testing.T) {
@@ -99,7 +100,7 @@ func TestPartitionAppendAndSeal(t *testing.T) {
 
 func TestPartitionScan(t *testing.T) {
 	win := PartitionWindow{Start: 0, End: 1_000}
-	p := NewPartition(win, "")
+	p := NewPartition(win)
 	for i := range 10 {
 		require.NoError(t, p.Append(record.Record{
 			Timestamp: int64(i * 100),
@@ -143,27 +144,8 @@ func TestPartitionIsSealable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			end := now.Add(tc.windowEndOffset).UnixNano()
 			win := PartitionWindow{Start: end - time.Hour.Nanoseconds(), End: end}
-			p := NewPartition(win, "")
+			p := NewPartition(win)
 			assert.Equal(t, tc.want, p.IsSealable(now, tc.lateArrivalWindow))
-		})
-	}
-}
-
-func TestPartitionIsExpired(t *testing.T) {
-	win := PartitionWindow{Start: 0, End: 1_000}
-	p := NewPartition(win, "")
-	tests := []struct {
-		name             string
-		retentionHorizon int64
-		want             bool
-	}{
-		{"horizon_past_window_end", 1_001, true},
-		{"horizon_at_window_end", 1_000, false}, // IsExpired: End < horizon, not <=
-		{"horizon_before_window_end", 500, false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, p.IsExpired(tc.retentionHorizon))
 		})
 	}
 }
@@ -242,14 +224,28 @@ func TestRouterLateArrival(t *testing.T) {
 		r := NewRouter(time.Hour, 5*time.Minute, Tolerant)
 		p, err := r.Route(lateTS)
 		require.NoError(t, err)
-		require.NotNil(t, p, "tolerant mode must return a late-arrival partition")
+		require.NotNil(t, p, "tolerant mode must accept late records")
+		assert.True(t, p.Window.Start <= lateTS && lateTS < p.Window.End,
+			"late record must land in its natural time-window partition")
 	})
 
-	t.Run("tolerant_same_partition_for_all_late", func(t *testing.T) {
+	t.Run("tolerant_same_window_same_partition", func(t *testing.T) {
 		r := NewRouter(time.Hour, 5*time.Minute, Tolerant)
+		p1, err1 := r.Route(lateTS)
+		require.NoError(t, err1)
+		// A second timestamp safely within the same hour window as lateTS.
+		ts2 := p1.Window.Start + int64(time.Minute)
+		p2, err2 := r.Route(ts2)
+		require.NoError(t, err2)
+		assert.Same(t, p1, p2, "late records in the same time window must share one partition")
+	})
+
+	t.Run("tolerant_different_windows_different_partitions", func(t *testing.T) {
+		r := NewRouter(time.Hour, 5*time.Minute, Tolerant)
+		ts2 := time.Now().Add(-3 * time.Hour).UnixNano() // different hour window
 		p1, _ := r.Route(lateTS)
-		p2, _ := r.Route(time.Now().Add(-3 * time.Hour).UnixNano())
-		assert.Same(t, p1, p2, "all late arrivals must go to the same dedicated partition")
+		p2, _ := r.Route(ts2)
+		assert.NotSame(t, p1, p2, "late records in different time windows must go to different partitions")
 	})
 }
 
@@ -296,7 +292,7 @@ func TestRouterSealExpired(t *testing.T) {
 		Start: now.Add(-3 * time.Hour).UnixNano(),
 		End:   now.Add(-2 * time.Hour).UnixNano(),
 	}
-	old := NewPartition(oldWin, "")
+	old := NewPartition(oldWin)
 	r.AddPartition(old)
 
 	// Inject a partition whose window closed 3 minutes ago — still within late-arrival window.
@@ -304,7 +300,7 @@ func TestRouterSealExpired(t *testing.T) {
 		Start: now.Add(-4 * time.Minute).UnixNano(),
 		End:   now.Add(-3 * time.Minute).UnixNano(),
 	}
-	recent := NewPartition(recentWin, "")
+	recent := NewPartition(recentWin)
 	r.AddPartition(recent)
 
 	r.SealExpired(now)

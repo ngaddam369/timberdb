@@ -39,6 +39,9 @@ func newAppendCmd() *cobra.Command {
 			}()
 
 			if file != "" {
+				if source != "" || tsStr != "" || payload != "" {
+					return fmt.Errorf("--file cannot be combined with --source, --timestamp, or --payload")
+				}
 				return appendBatch(e, file)
 			}
 			return appendSingle(e, source, tsStr, payload)
