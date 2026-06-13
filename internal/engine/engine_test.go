@@ -151,3 +151,55 @@ func TestEngine(t *testing.T) {
 		assert.NotEmpty(t, ssts, "flush must have produced at least one SSTable file")
 	})
 }
+
+func TestMergeIteratorView(t *testing.T) {
+	// Two iterators with interleaved timestamps.
+	recs1 := []record.Record{
+		{Timestamp: 10, SourceID: []byte("a"), Payload: []byte("p10")},
+		{Timestamp: 30, SourceID: []byte("a"), Payload: []byte("p30")},
+		{Timestamp: 50, SourceID: []byte("a"), Payload: []byte("p50")},
+	}
+	recs2 := []record.Record{
+		{Timestamp: 20, SourceID: []byte("b"), Payload: []byte("p20")},
+		{Timestamp: 40, SourceID: []byte("b"), Payload: []byte("p40")},
+	}
+
+	want := []record.Record{recs1[0], recs2[0], recs1[1], recs2[1], recs1[2]}
+
+	iter1 := newStaticIter(recs1)
+	iter2 := newStaticIter(recs2)
+	m := newMergeIterator([]record.Iterator{iter1, iter2})
+	defer func() { require.NoError(t, m.Close()) }()
+
+	var i int
+	for m.Next() {
+		view := m.View()
+		assert.Equal(t, want[i].Timestamp, view.Timestamp, "view timestamp at %d", i)
+		assert.Equal(t, want[i].SourceID, view.SourceID, "view SourceID at %d", i)
+		assert.Equal(t, want[i].Payload, view.Payload, "view Payload at %d", i)
+
+		rec := m.Record()
+		assert.Equal(t, want[i].Timestamp, rec.Timestamp, "Record() timestamp at %d", i)
+		assert.Equal(t, want[i].SourceID, rec.SourceID, "Record() SourceID at %d", i)
+		assert.Equal(t, want[i].Payload, rec.Payload, "Record() Payload at %d", i)
+		i++
+	}
+	require.NoError(t, m.Err())
+	assert.Equal(t, len(want), i)
+}
+
+// staticIter is a test-only iterator over an in-memory slice.
+type staticIter struct {
+	recs []record.Record
+	pos  int
+}
+
+func newStaticIter(recs []record.Record) *staticIter { return &staticIter{recs: recs, pos: -1} }
+func (s *staticIter) Next() bool {
+	s.pos++
+	return s.pos < len(s.recs)
+}
+func (s *staticIter) Record() record.Record   { return s.recs[s.pos] }
+func (s *staticIter) View() record.RecordView { return record.RecordView(s.recs[s.pos]) }
+func (s *staticIter) Close() error            { return nil }
+func (s *staticIter) Err() error              { return nil }

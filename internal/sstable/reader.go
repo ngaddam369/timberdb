@@ -124,18 +124,20 @@ func (r *Reader) Scan(start, end int64, sourceID []byte) (record.Iterator, error
 		startBlock--
 	}
 
-	records, err := r.readBlock(startBlock)
+	blockData, blockRem, err := r.readBlockRaw(startBlock)
 	if err != nil {
 		return nil, err
 	}
 
 	return &scanIterator{
-		r:        r,
-		start:    start,
-		end:      end,
-		sourceID: sourceID,
-		blockIdx: startBlock,
-		records:  records,
+		r:         r,
+		start:     start,
+		end:       end,
+		sourceID:  sourceID,
+		blockIdx:  startBlock,
+		blockData: blockData,
+		blockOff:  4, // skip 4-byte RecordCount header
+		blockRem:  blockRem,
 	}, nil
 }
 
@@ -144,14 +146,23 @@ func (r *Reader) Close() error {
 	return r.f.Close()
 }
 
-// readBlock reads and decodes the data block at index idx in the time index.
-func (r *Reader) readBlock(idx int) ([]record.Record, error) {
+// readBlockRaw reads and CRC-validates the block at idx. Returns the validated payload
+// (sans CRC), the record count from the header, and any error.
+func (r *Reader) readBlockRaw(idx int) (payload []byte, count int, err error) {
 	e := r.timeIndex[idx]
 	buf := make([]byte, e.size)
 	if _, err := r.f.ReadAt(buf, int64(e.offset)); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return decodeBlock(buf)
+	payload, err = validateBlock(buf)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(payload) < 4 {
+		return nil, 0, ErrBlockCorrupt
+	}
+	count = int(binary.LittleEndian.Uint32(payload[:4]))
+	return payload, count, nil
 }
 
 // loadTimeIndex reads the time index block and parses it into a slice of entries.
@@ -208,36 +219,44 @@ func loadSrcIndex(f *os.File, meta SSTableMeta) (map[string]srcEntry, error) {
 }
 
 // scanIterator iterates over records in a time-range and optional source filter.
+// blockData holds the validated block payload (sans CRC); SourceID and Payload in
+// current are zero-copy slices into blockData, kept alive by the GC as long as
+// any RecordView derived from them exists.
 type scanIterator struct {
 	r        *Reader
 	start    int64
 	end      int64
 	sourceID []byte
 
-	blockIdx int
-	records  []record.Record
-	pos      int
-	current  record.Record
-	err      error
+	blockIdx  int
+	blockData []byte // validated block payload (record count header + records)
+	blockOff  int    // parse cursor (starts at 4, after the 4-byte count header)
+	blockRem  int    // records left to parse in blockData
+	current   record.RecordView
+	err       error
 }
 
 // Next advances to the next matching record. Returns false when exhausted or
 // when a read error occurs; check Err() to distinguish the two.
 func (it *scanIterator) Next() bool {
 	for {
-		for it.pos < len(it.records) {
-			r := it.records[it.pos]
-			it.pos++
-			if r.Timestamp >= it.end {
+		for it.blockRem > 0 {
+			view, err := parseRecordAt(it.blockData, &it.blockOff)
+			if err != nil {
+				it.err = err
 				return false
 			}
-			if r.Timestamp < it.start {
+			it.blockRem--
+			if view.Timestamp >= it.end {
+				return false
+			}
+			if view.Timestamp < it.start {
 				continue
 			}
-			if len(it.sourceID) > 0 && !bytes.Equal(r.SourceID, it.sourceID) {
+			if len(it.sourceID) > 0 && !bytes.Equal(view.SourceID, it.sourceID) {
 				continue
 			}
-			it.current = r
+			it.current = view
 			return true
 		}
 
@@ -249,25 +268,26 @@ func (it *scanIterator) Next() bool {
 			return false
 		}
 
-		records, err := it.r.readBlock(it.blockIdx)
+		payload, count, err := it.r.readBlockRaw(it.blockIdx)
 		if err != nil {
 			it.err = err
 			return false
 		}
-		it.records = records
-		it.pos = 0
+		it.blockData = payload
+		it.blockOff = 4
+		it.blockRem = count
 	}
 }
 
-// Record returns the record at the current iterator position.
-func (it *scanIterator) Record() record.Record {
-	return it.current
-}
+// View returns a zero-copy view of the current record. The view's SourceID and Payload
+// slices are valid until the next call to Next.
+func (it *scanIterator) View() record.RecordView { return it.current }
+
+// Record returns a fully owned copy of the current record.
+func (it *scanIterator) Record() record.Record { return it.current.Clone() }
 
 // Close is a no-op; the Reader owns the file lifetime.
-func (it *scanIterator) Close() error {
-	return nil
-}
+func (it *scanIterator) Close() error { return nil }
 
 // Err returns the first read error encountered during iteration, or nil.
 func (it *scanIterator) Err() error { return it.err }
@@ -275,7 +295,8 @@ func (it *scanIterator) Err() error { return it.err }
 // emptyIter is a record.Iterator that is immediately exhausted.
 type emptyIter struct{}
 
-func (emptyIter) Next() bool            { return false }
-func (emptyIter) Record() record.Record { return record.Record{} }
-func (emptyIter) Close() error          { return nil }
-func (emptyIter) Err() error            { return nil }
+func (emptyIter) Next() bool              { return false }
+func (emptyIter) Record() record.Record   { return record.Record{} }
+func (emptyIter) View() record.RecordView { return record.RecordView{} }
+func (emptyIter) Close() error            { return nil }
+func (emptyIter) Err() error              { return nil }

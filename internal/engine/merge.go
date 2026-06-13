@@ -8,7 +8,7 @@ import (
 )
 
 type heapItem struct {
-	rec   record.Record
+	view  record.RecordView
 	index int
 }
 
@@ -17,10 +17,10 @@ type minHeap []heapItem
 func (h minHeap) Len() int      { return len(h) }
 func (h minHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 func (h minHeap) Less(i, j int) bool {
-	if h[i].rec.Timestamp != h[j].rec.Timestamp {
-		return h[i].rec.Timestamp < h[j].rec.Timestamp
+	if h[i].view.Timestamp != h[j].view.Timestamp {
+		return h[i].view.Timestamp < h[j].view.Timestamp
 	}
-	return bytes.Compare(h[i].rec.SourceID, h[j].rec.SourceID) < 0
+	return bytes.Compare(h[i].view.SourceID, h[j].view.SourceID) < 0
 }
 func (h *minHeap) Push(x any) {
 	item, ok := x.(heapItem)
@@ -40,7 +40,7 @@ func (h *minHeap) Pop() any {
 type mergeIterator struct {
 	iters  []record.Iterator
 	h      minHeap
-	cur    record.Record
+	cur    record.RecordView
 	err    error
 	closed bool
 }
@@ -50,7 +50,7 @@ func newMergeIterator(iters []record.Iterator) *mergeIterator {
 	heap.Init(&m.h)
 	for i, it := range iters {
 		if it.Next() {
-			heap.Push(&m.h, heapItem{rec: it.Record(), index: i})
+			heap.Push(&m.h, heapItem{view: it.View(), index: i})
 		} else if err := it.Err(); err != nil && m.err == nil {
 			m.err = err
 		}
@@ -67,18 +67,19 @@ func (m *mergeIterator) Next() bool {
 	if !ok {
 		return false
 	}
-	m.cur = item.rec
+	m.cur = item.view
 	it := m.iters[item.index]
 	if it.Next() {
-		heap.Push(&m.h, heapItem{rec: it.Record(), index: item.index})
+		heap.Push(&m.h, heapItem{view: it.View(), index: item.index})
 	} else if err := it.Err(); err != nil && m.err == nil {
 		m.err = err
 	}
 	return true
 }
 
-func (m *mergeIterator) Record() record.Record { return m.cur }
-func (m *mergeIterator) Err() error            { return m.err }
+func (m *mergeIterator) Record() record.Record   { return m.cur.Clone() }
+func (m *mergeIterator) View() record.RecordView { return m.cur }
+func (m *mergeIterator) Err() error              { return m.err }
 
 func (m *mergeIterator) Close() error {
 	if m.closed {

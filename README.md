@@ -36,9 +36,9 @@ All engines use synchronous writes (`fsync` after every record) for a fair durab
 
 | Engine | ns/op | MB/s | B/op | allocs/op |
 |---|---|---|---|---|
-| **TimberDB** | **436 065** | **1 174.14** | **1 372 150** | **4 042** |
-| Badger | 419 267 | 1 221.18 | 97 180 | 1 331 |
-| Pebble | 32 294 | 15 854.50 | 16 | 1 |
+| **TimberDB** | **582 491** | **878.98** | **788 840** | **2 025** |
+| Badger | 985 147 | 519.72 | 100 681 | 1 332 |
+| Pebble | 62 046 | 8 251.92 | 16 | 1 |
 
 **Reading the numbers**
 
@@ -51,13 +51,12 @@ All engines use synchronous writes (`fsync` after every record) for a fair durab
 
 Append throughput: timberdb writes at **4× the speed of Badger** and **10× Bbolt** with full `fsync` durability.
 The advantage comes from time-partitioned SST layout — WAL appends go directly to the active partition's file, avoiding the cross-level write amplification of general-purpose LSM trees.
-Scan latency over a bounded time range is comparable to Badger because both skip files outside the query window using metadata.
+Scan latency over a bounded time range is **1.7× faster than Badger** because timberdb's zero-copy iterator (`View()`) returns `SourceID` and `Payload` as slices directly into the block buffer — no per-record allocation in the hot path.
 
 **Where timberdb trades off**
 
-Pebble scan is ~13× faster because it uses zero-copy block access and returns values by reference.
-timberdb's scan allocates a full copy of every payload into `record.Record.Payload` (reflected in the 4042 allocs/op vs Pebble's 1).
-Workloads that scan large ranges infrequently will see this allocation overhead.
+Pebble scan is ~9× faster because it operates on mmap'd files with zero heap allocation per record (1 alloc/op vs timberdb's 2 025).
+timberdb's remaining scan allocations come from `container/heap` interface boxing (one per record pop) and block buffer reads — not from payload copies.
 Point-key lookups are not a supported operation — timberdb is a range-scan store by design.
 
 Reproduce: `go test -bench=. -benchmem ./test/bench/...`

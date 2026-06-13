@@ -290,3 +290,76 @@ func TestCompaction(t *testing.T) {
 		assert.True(t, os.IsNotExist(err2), "input file 2 must be deleted from disk")
 	})
 }
+
+func TestMergePreservesPayload(t *testing.T) {
+	dir := t.TempDir()
+	win := partition.PartitionWindow{Start: 0, End: int64(time.Hour)}
+
+	m, err := manifest.Open(filepath.Join(dir, "MANIFEST"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, m.Close()) })
+
+	wopts := sstable.WriterOptions{
+		BlockSizeBytes: sstable.DefaultWriterOptions().BlockSizeBytes,
+		PartitionStart: win.Start,
+		PartitionEnd:   win.End,
+	}
+
+	// Build two input SSTables with distinct payloads.
+	inputs := []struct {
+		path    string
+		records []record.Record
+	}{
+		{
+			path: filepath.Join(dir, "a.sst"),
+			records: []record.Record{
+				{Timestamp: 1, SourceID: []byte("s1"), Payload: []byte("payload-from-file-A")},
+				{Timestamp: 3, SourceID: []byte("s3"), Payload: []byte("also-from-A")},
+			},
+		},
+		{
+			path: filepath.Join(dir, "b.sst"),
+			records: []record.Record{
+				{Timestamp: 2, SourceID: []byte("s2"), Payload: []byte("payload-from-file-B")},
+				{Timestamp: 4, SourceID: []byte("s4"), Payload: []byte("also-from-B")},
+			},
+		},
+	}
+
+	var readers []*sstable.Reader
+	for _, inp := range inputs {
+		buildSSTable(t, inp.path, win, inp.records)
+		r, err := sstable.NewReader(inp.path)
+		require.NoError(t, err)
+		readers = append(readers, r)
+	}
+
+	merged, err := Merge(readers, filepath.Join(dir, "merged.sst"), wopts, m)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = merged.Close() })
+	for _, r := range readers {
+		require.NoError(t, r.Close())
+	}
+
+	// Drain the merged SSTable and verify all payloads survived intact.
+	meta := merged.Meta()
+	it, err := merged.Scan(meta.MinTimestamp, meta.MaxTimestamp+1, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, it.Close()) })
+
+	want := []record.Record{
+		inputs[0].records[0], inputs[1].records[0],
+		inputs[0].records[1], inputs[1].records[1],
+	}
+	var i int
+	for it.Next() {
+		rec := it.Record()
+		require.Less(t, i, len(want), "more records than expected")
+		assert.Equal(t, want[i].Timestamp, rec.Timestamp, "timestamp at %d", i)
+		assert.Equal(t, want[i].SourceID, rec.SourceID, "SourceID at %d", i)
+		assert.Equal(t, want[i].Payload, rec.Payload, "Payload at %d", i)
+		i++
+	}
+	require.NoError(t, it.Err())
+	assert.Equal(t, len(want), i, "record count after merge")
+}

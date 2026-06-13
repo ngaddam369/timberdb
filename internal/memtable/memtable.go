@@ -103,9 +103,10 @@ func (it *iterator) Next() bool {
 	}
 }
 
-func (it *iterator) Record() record.Record { return it.current }
-func (it *iterator) Close() error          { return nil }
-func (it *iterator) Err() error            { return nil }
+func (it *iterator) Record() record.Record   { return it.current }
+func (it *iterator) View() record.RecordView { return record.RecordView(it.current) }
+func (it *iterator) Close() error            { return nil }
+func (it *iterator) Err() error              { return nil }
 
 // insertionPoint returns the index at which r should be inserted to maintain
 // (Timestamp, SourceID) ascending order.

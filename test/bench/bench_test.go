@@ -122,7 +122,9 @@ func BenchmarkTimberDBScan(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
+		// View returns zero-copy slices into the block buffer — no per-record allocation.
 		for it.Next() {
+			_ = it.View()
 		}
 		if err := it.Err(); err != nil {
 			b.Fatal(err)

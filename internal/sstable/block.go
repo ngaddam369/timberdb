@@ -63,6 +63,54 @@ func encodeBlock(records []record.Record) []byte {
 	return buf
 }
 
+// validateBlock verifies the CRC of a raw block and returns the payload slice (everything
+// except the trailing 4-byte CRC) or ErrBlockCorrupt. Does not allocate.
+func validateBlock(data []byte) ([]byte, error) {
+	if len(data) < 8 {
+		return nil, ErrBlockCorrupt
+	}
+	payload := data[:len(data)-4]
+	storedCRC := binary.LittleEndian.Uint32(data[len(data)-4:])
+	h := crc32.NewIEEE()
+	h.Write(payload)
+	if h.Sum32() != storedCRC {
+		return nil, ErrBlockCorrupt
+	}
+	return payload, nil
+}
+
+// parseRecordAt reads one record from payload starting at *off, returning a RecordView
+// whose SourceID and Payload point directly into payload. *off is advanced past the record.
+func parseRecordAt(payload []byte, off *int) (record.RecordView, error) {
+	o := *off
+	if o+12 > len(payload) {
+		return record.RecordView{}, ErrBlockCorrupt
+	}
+	ts := int64(binary.LittleEndian.Uint64(payload[o : o+8]))
+	o += 8
+
+	srcIDLen := int(binary.LittleEndian.Uint32(payload[o : o+4]))
+	o += 4
+
+	if o+srcIDLen+4 > len(payload) {
+		return record.RecordView{}, ErrBlockCorrupt
+	}
+	srcID := payload[o : o+srcIDLen]
+	o += srcIDLen
+
+	payloadLen := int(binary.LittleEndian.Uint32(payload[o : o+4]))
+	o += 4
+
+	if o+payloadLen > len(payload) {
+		return record.RecordView{}, ErrBlockCorrupt
+	}
+	p := payload[o : o+payloadLen]
+	o += payloadLen
+
+	*off = o
+	return record.RecordView{Timestamp: ts, SourceID: srcID, Payload: p}, nil
+}
+
 // decodeBlock deserialises a block produced by encodeBlock.
 // Returns ErrBlockCorrupt if the CRC does not match or the data is malformed.
 func decodeBlock(data []byte) ([]record.Record, error) {

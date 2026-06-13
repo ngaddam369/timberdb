@@ -59,7 +59,7 @@ func Merge(
 	heap.Init(h)
 	for _, it := range iters {
 		if it.Next() {
-			heap.Push(h, mergeItem{rec: it.Record(), iter: it})
+			heap.Push(h, mergeItem{view: it.View(), iter: it})
 		} else {
 			if err := it.Err(); err != nil {
 				drainAndCloseIters(iters)
@@ -96,7 +96,7 @@ func Merge(
 			drainHeap()
 			return nil, errors.New("compaction: unexpected heap item type")
 		}
-		if err := w.Add(item.rec); err != nil {
+		if err := w.Add(item.view.Clone()); err != nil {
 			if cerr := item.iter.Close(); cerr != nil {
 				slog.Error("compaction: close iter on Add error", "err", cerr)
 			}
@@ -104,7 +104,7 @@ func Merge(
 			return nil, err
 		}
 		if item.iter.Next() {
-			heap.Push(h, mergeItem{rec: item.iter.Record(), iter: item.iter})
+			heap.Push(h, mergeItem{view: item.iter.View(), iter: item.iter})
 		} else {
 			if err := item.iter.Err(); err != nil {
 				if cerr := item.iter.Close(); cerr != nil {
@@ -162,7 +162,7 @@ func Merge(
 
 // mergeItem is one slot in the k-way merge heap.
 type mergeItem struct {
-	rec  record.Record
+	view record.RecordView
 	iter record.Iterator
 }
 
@@ -172,7 +172,7 @@ type mergeHeap []mergeItem
 func (h mergeHeap) Len() int      { return len(h) }
 func (h mergeHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 func (h mergeHeap) Less(i, j int) bool {
-	a, b := h[i].rec, h[j].rec
+	a, b := h[i].view, h[j].view
 	if a.Timestamp != b.Timestamp {
 		return a.Timestamp < b.Timestamp
 	}

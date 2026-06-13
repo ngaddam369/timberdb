@@ -207,3 +207,31 @@ func TestApproximateSize(t *testing.T) {
 		})
 	}
 }
+
+func TestIteratorView(t *testing.T) {
+	m := New()
+	recs := []record.Record{
+		{Timestamp: 10, SourceID: []byte("s1"), Payload: []byte("p1")},
+		{Timestamp: 20, SourceID: []byte("s2"), Payload: []byte("p2")},
+		{Timestamp: 30, SourceID: []byte("s3"), Payload: []byte("p3")},
+	}
+	for _, r := range recs {
+		m.Append(r)
+	}
+
+	it := m.Scan(0, 100, nil)
+	defer func() { require.NoError(t, it.Close()) }()
+
+	for i := 0; it.Next(); i++ {
+		view := it.View()
+		assert.Equal(t, recs[i].Timestamp, view.Timestamp)
+		assert.Equal(t, recs[i].SourceID, view.SourceID)
+		assert.Equal(t, recs[i].Payload, view.Payload)
+
+		rec := it.Record()
+		assert.Equal(t, recs[i].Timestamp, rec.Timestamp)
+		assert.Equal(t, recs[i].SourceID, rec.SourceID)
+		assert.Equal(t, recs[i].Payload, rec.Payload)
+	}
+	require.NoError(t, it.Err())
+}

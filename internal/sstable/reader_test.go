@@ -246,3 +246,37 @@ func TestReaderEmptySSTable(t *testing.T) {
 	got := collectScan(t, r, 0, 9999, nil)
 	assert.Empty(t, got)
 }
+
+func TestScanIteratorView(t *testing.T) {
+	recs := []record.Record{
+		{Timestamp: 100, SourceID: []byte("s1"), Payload: []byte("payload-one")},
+		{Timestamp: 200, SourceID: []byte("s2"), Payload: []byte("payload-two")},
+		{Timestamp: 300, SourceID: []byte("s3"), Payload: []byte("payload-three")},
+		{Timestamp: 400, SourceID: []byte("s4"), Payload: []byte("payload-four")},
+		{Timestamp: 500, SourceID: []byte("s5"), Payload: []byte("payload-five")},
+	}
+	path, _ := writeSSTable(t, DefaultWriterOptions(), recs)
+	r, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	it, err := r.Scan(0, 9999, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, it.Close()) })
+
+	var i int
+	for it.Next() {
+		view := it.View()
+		assert.Equal(t, recs[i].Timestamp, view.Timestamp, "view timestamp mismatch at %d", i)
+		assert.Equal(t, recs[i].SourceID, view.SourceID, "view SourceID mismatch at %d", i)
+		assert.Equal(t, recs[i].Payload, view.Payload, "view Payload mismatch at %d", i)
+
+		rec := it.Record()
+		assert.Equal(t, recs[i].Timestamp, rec.Timestamp, "Record() timestamp mismatch at %d", i)
+		assert.Equal(t, recs[i].SourceID, rec.SourceID, "Record() SourceID mismatch at %d", i)
+		assert.Equal(t, recs[i].Payload, rec.Payload, "Record() Payload mismatch at %d", i)
+		i++
+	}
+	require.NoError(t, it.Err())
+	assert.Equal(t, len(recs), i, "expected all records to be visited")
+}
