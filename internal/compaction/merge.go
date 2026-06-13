@@ -2,8 +2,6 @@ package compaction
 
 import (
 	"bytes"
-	"container/heap"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -56,10 +54,10 @@ func Merge(
 
 	// Seed the min-heap with the first record from each non-empty iterator.
 	h := &mergeHeap{}
-	heap.Init(h)
+	h.init()
 	for _, it := range iters {
 		if it.Next() {
-			heap.Push(h, mergeItem{view: it.View(), iter: it})
+			h.push(mergeItem{view: it.View(), iter: it})
 		} else {
 			if err := it.Err(); err != nil {
 				drainAndCloseIters(iters)
@@ -72,13 +70,10 @@ func Merge(
 	}
 
 	drainHeap := func() {
-		for h.Len() > 0 {
-			raw := heap.Pop(h)
-			item, ok := raw.(mergeItem)
-			if ok {
-				if cerr := item.iter.Close(); cerr != nil {
-					slog.Error("compaction: close heap iter on error", "err", cerr)
-				}
+		for len(*h) > 0 {
+			item := h.pop()
+			if cerr := item.iter.Close(); cerr != nil {
+				slog.Error("compaction: close heap iter on error", "err", cerr)
 			}
 		}
 	}
@@ -89,13 +84,8 @@ func Merge(
 		return nil, err
 	}
 
-	for h.Len() > 0 {
-		raw := heap.Pop(h)
-		item, ok := raw.(mergeItem)
-		if !ok {
-			drainHeap()
-			return nil, errors.New("compaction: unexpected heap item type")
-		}
+	for len(*h) > 0 {
+		item := h.pop()
 		if err := w.Add(item.view.Clone()); err != nil {
 			if cerr := item.iter.Close(); cerr != nil {
 				slog.Error("compaction: close iter on Add error", "err", cerr)
@@ -104,7 +94,7 @@ func Merge(
 			return nil, err
 		}
 		if item.iter.Next() {
-			heap.Push(h, mergeItem{view: item.iter.View(), iter: item.iter})
+			h.push(mergeItem{view: item.iter.View(), iter: item.iter})
 		} else {
 			if err := item.iter.Err(); err != nil {
 				if cerr := item.iter.Close(); cerr != nil {
@@ -169,8 +159,6 @@ type mergeItem struct {
 // mergeHeap is a min-heap of mergeItems ordered by (Timestamp, SourceID).
 type mergeHeap []mergeItem
 
-func (h mergeHeap) Len() int      { return len(h) }
-func (h mergeHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 func (h mergeHeap) Less(i, j int) bool {
 	a, b := h[i].view, h[j].view
 	if a.Timestamp != b.Timestamp {
@@ -179,18 +167,53 @@ func (h mergeHeap) Less(i, j int) bool {
 	return bytes.Compare(a.SourceID, b.SourceID) < 0
 }
 
-func (h *mergeHeap) Push(x any) {
-	item, ok := x.(mergeItem)
-	if !ok {
-		panic("compaction: mergeHeap.Push received non-mergeItem")
-	}
+func (h *mergeHeap) push(item mergeItem) {
 	*h = append(*h, item)
+	h.up(len(*h) - 1)
 }
 
-func (h *mergeHeap) Pop() any {
-	old := *h
-	n := len(old)
-	item := old[n-1]
-	*h = old[:n-1]
+func (h *mergeHeap) pop() mergeItem {
+	n := len(*h) - 1
+	(*h)[0], (*h)[n] = (*h)[n], (*h)[0]
+	h.down(0, n)
+	item := (*h)[n]
+	*h = (*h)[:n]
 	return item
+}
+
+func (h *mergeHeap) init() {
+	n := len(*h)
+	for i := n/2 - 1; i >= 0; i-- {
+		h.down(i, n)
+	}
+}
+
+func (h *mergeHeap) up(j int) {
+	for {
+		i := (j - 1) / 2
+		if i == j || !h.Less(j, i) {
+			break
+		}
+		(*h)[i], (*h)[j] = (*h)[j], (*h)[i]
+		j = i
+	}
+}
+
+func (h *mergeHeap) down(i0, n int) {
+	i := i0
+	for {
+		j1 := 2*i + 1
+		if j1 >= n {
+			break
+		}
+		j := j1
+		if j2 := j1 + 1; j2 < n && h.Less(j2, j1) {
+			j = j2
+		}
+		if !h.Less(j, i) {
+			break
+		}
+		(*h)[i], (*h)[j] = (*h)[j], (*h)[i]
+		i = j
+	}
 }

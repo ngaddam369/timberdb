@@ -2,7 +2,6 @@ package engine
 
 import (
 	"bytes"
-	"container/heap"
 
 	"github.com/ngaddam369/timberdb/internal/record"
 )
@@ -14,27 +13,62 @@ type heapItem struct {
 
 type minHeap []heapItem
 
-func (h minHeap) Len() int      { return len(h) }
-func (h minHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 func (h minHeap) Less(i, j int) bool {
 	if h[i].view.Timestamp != h[j].view.Timestamp {
 		return h[i].view.Timestamp < h[j].view.Timestamp
 	}
 	return bytes.Compare(h[i].view.SourceID, h[j].view.SourceID) < 0
 }
-func (h *minHeap) Push(x any) {
-	item, ok := x.(heapItem)
-	if !ok {
-		panic("mergeIterator: pushed non-heapItem")
-	}
+
+func (h *minHeap) push(item heapItem) {
 	*h = append(*h, item)
+	h.up(len(*h) - 1)
 }
-func (h *minHeap) Pop() any {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[:n-1]
-	return x
+
+func (h *minHeap) pop() heapItem {
+	n := len(*h) - 1
+	(*h)[0], (*h)[n] = (*h)[n], (*h)[0]
+	h.down(0, n)
+	item := (*h)[n]
+	*h = (*h)[:n]
+	return item
+}
+
+func (h *minHeap) init() {
+	n := len(*h)
+	for i := n/2 - 1; i >= 0; i-- {
+		h.down(i, n)
+	}
+}
+
+func (h *minHeap) up(j int) {
+	for {
+		i := (j - 1) / 2
+		if i == j || !h.Less(j, i) {
+			break
+		}
+		(*h)[i], (*h)[j] = (*h)[j], (*h)[i]
+		j = i
+	}
+}
+
+func (h *minHeap) down(i0, n int) {
+	i := i0
+	for {
+		j1 := 2*i + 1
+		if j1 >= n {
+			break
+		}
+		j := j1
+		if j2 := j1 + 1; j2 < n && h.Less(j2, j1) {
+			j = j2
+		}
+		if !h.Less(j, i) {
+			break
+		}
+		(*h)[i], (*h)[j] = (*h)[j], (*h)[i]
+		i = j
+	}
 }
 
 type mergeIterator struct {
@@ -47,10 +81,10 @@ type mergeIterator struct {
 
 func newMergeIterator(iters []record.Iterator) *mergeIterator {
 	m := &mergeIterator{iters: iters}
-	heap.Init(&m.h)
+	m.h.init()
 	for i, it := range iters {
 		if it.Next() {
-			heap.Push(&m.h, heapItem{view: it.View(), index: i})
+			m.h.push(heapItem{view: it.View(), index: i})
 		} else if err := it.Err(); err != nil && m.err == nil {
 			m.err = err
 		}
@@ -62,15 +96,11 @@ func (m *mergeIterator) Next() bool {
 	if m.err != nil || len(m.h) == 0 {
 		return false
 	}
-	raw := heap.Pop(&m.h)
-	item, ok := raw.(heapItem)
-	if !ok {
-		return false
-	}
+	item := m.h.pop()
 	m.cur = item.view
 	it := m.iters[item.index]
 	if it.Next() {
-		heap.Push(&m.h, heapItem{view: it.View(), index: item.index})
+		m.h.push(heapItem{view: it.View(), index: item.index})
 	} else if err := it.Err(); err != nil && m.err == nil {
 		m.err = err
 	}

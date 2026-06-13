@@ -152,6 +152,33 @@ func TestEngine(t *testing.T) {
 	})
 }
 
+func TestMergeIteratorZeroAllocsPerRecord(t *testing.T) {
+	const N = 100
+	recs := make([]record.Record, N)
+	for i := range recs {
+		recs[i] = record.Record{
+			Timestamp: int64(i),
+			SourceID:  []byte("src"),
+			Payload:   []byte("p"),
+		}
+	}
+	half := N / 2
+
+	allocs := testing.AllocsPerRun(50, func() {
+		m := newMergeIterator([]record.Iterator{
+			newStaticIter(recs[:half]),
+			newStaticIter(recs[half:]),
+		})
+		for m.Next() {
+			_ = m.View()
+		}
+		_ = m.Close()
+	})
+	if allocs > 10 {
+		t.Errorf("expected ≤ 10 total allocs for %d-record merge, got %.0f", N, allocs)
+	}
+}
+
 func TestMergeIteratorView(t *testing.T) {
 	// Two iterators with interleaved timestamps.
 	recs1 := []record.Record{
