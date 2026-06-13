@@ -3,6 +3,7 @@ package sstable
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -234,6 +235,71 @@ func TestReaderInvalidMagic(t *testing.T) {
 			assert.ErrorIs(t, err, ErrInvalidMagic)
 		})
 	}
+}
+
+func TestScanBlockAllocsZero(t *testing.T) {
+	// 200 records with tiny blocks forces many block reads; mmap must make them allocation-free.
+	opts := WriterOptions{BlockSizeBytes: 64}
+	var recs []record.Record
+	for i := range 200 {
+		recs = append(recs, record.Record{
+			Timestamp: int64(i+1) * 1000,
+			SourceID:  []byte("src"),
+			Payload:   make([]byte, 16),
+		})
+	}
+	path, _ := writeSSTable(t, opts, recs)
+	r, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	allocs := testing.AllocsPerRun(20, func() {
+		it, err2 := r.Scan(0, int64(201*1000), nil)
+		if err2 != nil {
+			t.Fatal(err2)
+		}
+		for it.Next() {
+			_ = it.View()
+		}
+		_ = it.Close()
+	})
+	if allocs > 5 {
+		t.Errorf("expected ≤ 5 allocs for 200-record scan, got %.0f", allocs)
+	}
+}
+
+func TestConcurrentScanSameFile(t *testing.T) {
+	var recs []record.Record
+	for i := range 100 {
+		recs = append(recs, record.Record{
+			Timestamp: int64(i+1) * 1000,
+			SourceID:  []byte("src"),
+			Payload:   []byte("payload"),
+		})
+	}
+	path, _ := writeSSTable(t, DefaultWriterOptions(), recs)
+
+	r1, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r1.Close() })
+
+	r2, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r2.Close() })
+
+	results := make([][]record.Record, 2)
+	var wg sync.WaitGroup
+	for i, r := range []*Reader{r1, r2} {
+		wg.Add(1)
+		go func(idx int, rd *Reader) {
+			defer wg.Done()
+			results[idx] = collectScan(t, rd, 0, int64(101*1000), nil)
+		}(i, r)
+	}
+	wg.Wait()
+
+	assert.Len(t, results[0], 100)
+	assert.Len(t, results[1], 100)
 }
 
 func TestReaderEmptySSTable(t *testing.T) {

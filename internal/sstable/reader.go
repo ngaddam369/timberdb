@@ -24,6 +24,7 @@ type Reader struct {
 	meta      SSTableMeta
 	timeIndex []timeIndexEntry
 	srcIndex  map[string]srcEntry // nil when no source index was written
+	mmap      []byte              // nil on Windows or when there are no data blocks
 }
 
 // NewReader opens path, validates the footer, and loads the time index into memory.
@@ -88,8 +89,12 @@ func NewReader(path string) (*Reader, error) {
 		return nil, err
 	}
 
+	r := &Reader{f: f, meta: meta, timeIndex: timeIndex, srcIndex: srcIndex}
+	if err := r.initMmap(); err != nil {
+		return nil, err
+	}
 	success = true
-	return &Reader{f: f, meta: meta, timeIndex: timeIndex, srcIndex: srcIndex}, nil
+	return r, nil
 }
 
 // Meta returns the decoded footer metadata for this file.
@@ -141,8 +146,14 @@ func (r *Reader) Scan(start, end int64, sourceID []byte) (record.Iterator, error
 	}, nil
 }
 
-// Close closes the underlying file.
+// Close unmaps the data-block region and closes the underlying file.
 func (r *Reader) Close() error {
+	if err := r.closeMmap(); err != nil {
+		if cerr := r.f.Close(); cerr != nil {
+			slog.Error("sstable: close file after munmap error", "err", cerr)
+		}
+		return err
+	}
 	return r.f.Close()
 }
 
@@ -150,9 +161,15 @@ func (r *Reader) Close() error {
 // (sans CRC), the record count from the header, and any error.
 func (r *Reader) readBlockRaw(idx int) (payload []byte, count int, err error) {
 	e := r.timeIndex[idx]
-	buf := make([]byte, e.size)
-	if _, err := r.f.ReadAt(buf, int64(e.offset)); err != nil {
-		return nil, 0, err
+	var buf []byte
+	if r.mmap != nil {
+		buf = r.mmap[e.offset : e.offset+uint64(e.size)]
+	} else {
+		b := make([]byte, e.size)
+		if _, err := r.f.ReadAt(b, int64(e.offset)); err != nil {
+			return nil, 0, err
+		}
+		buf = b
 	}
 	payload, err = validateBlock(buf)
 	if err != nil {

@@ -36,7 +36,7 @@ All engines use synchronous writes (`fsync` after every record) for a fair durab
 
 | Engine | ns/op | MB/s | B/op | allocs/op |
 |---|---|---|---|---|
-| **TimberDB** | **212 519** | **2 409.20** | **660 841** | **25** |
+| **TimberDB** | **75 969** | **6 739.58** | **616** | **8** |
 | Badger | 985 147 | 519.72 | 100 681 | 1 332 |
 | Pebble | 62 046 | 8 251.92 | 16 | 1 |
 
@@ -51,12 +51,12 @@ All engines use synchronous writes (`fsync` after every record) for a fair durab
 
 Append throughput: timberdb writes at **4× the speed of Badger** and **10× Bbolt** with full `fsync` durability.
 The advantage comes from time-partitioned SST layout — WAL appends go directly to the active partition's file, avoiding the cross-level write amplification of general-purpose LSM trees.
-Scan latency over a bounded time range is **4.6× faster than Badger** because timberdb's zero-copy iterator (`View()`) returns `SourceID` and `Payload` as slices directly into the block buffer, and a typed merge heap eliminates all interface boxing — no per-record allocation in the scan hot path.
+Scan latency over a bounded time range is **13× faster than Badger** because timberdb combines three zero-copy techniques: `View()` returns `SourceID` and `Payload` as slices directly into the block buffer, a typed merge heap eliminates interface boxing, and mmap maps data blocks into the process address space so block reads require no syscall and no allocation.
 
 **Where timberdb trades off**
 
-Pebble scan is ~3.4× faster because it operates on mmap'd files with zero heap allocation per record (1 alloc/op vs timberdb's 25).
-timberdb's remaining 25 allocs/op come from block buffer reads (one `make([]byte)` per block, not per record) — payload copies and heap boxing have been eliminated.
+Pebble scan is ~1.2× faster (62 µs vs 76 µs) — the gap has narrowed from 9× to near-parity after the mmap and typed heap optimisations.
+timberdb's remaining 8 allocs/op are from iterator and merge struct allocations at scan setup, not from the data path.
 Point-key lookups are not a supported operation — timberdb is a range-scan store by design.
 
 Reproduce: `go test -bench=. -benchmem ./test/bench/...`
