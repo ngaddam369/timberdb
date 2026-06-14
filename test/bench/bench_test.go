@@ -12,6 +12,7 @@ package bench_test
 import (
 	"bytes"
 	"encoding/binary"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -23,6 +24,27 @@ import (
 	"github.com/ngaddam369/timberdb/internal/engine"
 	"github.com/ngaddam369/timberdb/internal/record"
 )
+
+// dirTotalBytes sums the sizes of all files under dir.
+func dirTotalBytes(dir string) int64 {
+	var total int64
+	_ = filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
+
+// reportSA reports storage amplification: bytes on disk after the benchmark ÷ user bytes written.
+// SA ≈ WA for engines that retain all intermediate files; SA < WA for engines that delete WAL
+// segments after flush (timberdb, pebble). See README for interpretation.
+func reportSA(b *testing.B, dir string) {
+	b.Helper()
+	userBytes := int64(b.N) * benchPayloadSize
+	b.ReportMetric(float64(dirTotalBytes(dir))/float64(userBytes), "SA")
+}
 
 const (
 	benchPayloadSize = 512
@@ -57,7 +79,6 @@ func BenchmarkTimberDBAppend(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer func() { _ = e.Close() }()
 
 	b.SetBytes(benchPayloadSize)
 	b.ResetTimer()
@@ -71,6 +92,12 @@ func BenchmarkTimberDBAppend(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+	b.StopTimer()
+	// Close before SA so the engine flushes WAL→SST and releases pre-allocated space.
+	if err := e.Close(); err != nil {
+		b.Fatal(err)
+	}
+	reportSA(b, dir)
 }
 
 func BenchmarkTimberDBScan(b *testing.B) {
@@ -144,7 +171,6 @@ func BenchmarkBadgerAppend(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer func() { _ = db.Close() }()
 
 	b.SetBytes(benchPayloadSize)
 	b.ResetTimer()
@@ -157,6 +183,11 @@ func BenchmarkBadgerAppend(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+	b.StopTimer()
+	if err := db.Close(); err != nil {
+		b.Fatal(err)
+	}
+	reportSA(b, dir)
 }
 
 func BenchmarkBadgerScan(b *testing.B) {
@@ -215,7 +246,6 @@ func BenchmarkBboltAppend(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer func() { _ = db.Close() }()
 
 	bucket := []byte("logs")
 	if err := db.Update(func(tx *bbolt.Tx) error {
@@ -236,6 +266,11 @@ func BenchmarkBboltAppend(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+	b.StopTimer()
+	if err := db.Close(); err != nil {
+		b.Fatal(err)
+	}
+	reportSA(b, dir)
 }
 
 // --- pebble benchmarks ---
@@ -246,7 +281,6 @@ func BenchmarkPebbleAppend(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer func() { _ = db.Close() }()
 
 	b.SetBytes(benchPayloadSize)
 	b.ResetTimer()
@@ -257,6 +291,11 @@ func BenchmarkPebbleAppend(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+	b.StopTimer()
+	if err := db.Close(); err != nil {
+		b.Fatal(err)
+	}
+	reportSA(b, dir)
 }
 
 func BenchmarkPebbleScan(b *testing.B) {
