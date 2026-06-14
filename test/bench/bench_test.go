@@ -23,6 +23,7 @@ import (
 
 	"github.com/ngaddam369/timberdb/internal/engine"
 	"github.com/ngaddam369/timberdb/internal/record"
+	"github.com/ngaddam369/timberdb/internal/sstable"
 )
 
 // dirTotalBytes sums the sizes of all files under dir.
@@ -75,6 +76,7 @@ func BenchmarkTimberDBAppend(b *testing.B) {
 	opts.MemtableSizeBytes = 64 << 20 // prevent auto-flush during benchmark
 	opts.CompactionCheckInterval = time.Hour
 	opts.RetentionCheckInterval = time.Hour
+	opts.CompressionType = sstable.CompressionZstd
 	e, err := engine.Open(dir, opts)
 	if err != nil {
 		b.Fatal(err)
@@ -109,6 +111,7 @@ func BenchmarkTimberDBScan(b *testing.B) {
 		opts.MemtableSizeBytes = 64 << 20
 		opts.CompactionCheckInterval = time.Hour
 		opts.RetentionCheckInterval = time.Hour
+		opts.CompressionType = sstable.CompressionZstd
 		e, err := engine.Open(dir, opts)
 		if err != nil {
 			b.Fatal(err)

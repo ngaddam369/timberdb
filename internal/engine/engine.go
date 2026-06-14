@@ -378,10 +378,11 @@ func (e *Engine) flushPartition(p *partition.TimePartition) error {
 
 	sstPath := filepath.Join(e.dir, fmt.Sprintf("%d-%06d.sst", p.Window.Start, newWALSeq))
 	wopts := sstable.WriterOptions{
-		BlockSizeBytes: e.opts.BlockSizeBytes,
-		IndexSources:   e.opts.IndexSources,
-		PartitionStart: p.Window.Start,
-		PartitionEnd:   p.Window.End,
+		BlockSizeBytes:  e.opts.BlockSizeBytes,
+		IndexSources:    e.opts.IndexSources,
+		PartitionStart:  p.Window.Start,
+		PartitionEnd:    p.Window.End,
+		CompressionType: e.opts.CompressionType,
 	}
 	w, err := sstable.NewWriter(sstPath, wopts)
 	if err != nil {
@@ -543,10 +544,11 @@ func (e *Engine) maybeCompact(win partition.PartitionWindow) {
 
 	outputPath := filepath.Join(e.dir, fmt.Sprintf("%d-compact-%06d.sst", win.Start, seq))
 	wopts := sstable.WriterOptions{
-		BlockSizeBytes: e.opts.BlockSizeBytes,
-		IndexSources:   e.opts.IndexSources,
-		PartitionStart: win.Start,
-		PartitionEnd:   win.End,
+		BlockSizeBytes:  e.opts.BlockSizeBytes,
+		IndexSources:    e.opts.IndexSources,
+		PartitionStart:  win.Start,
+		PartitionEnd:    win.End,
+		CompressionType: e.opts.CompressionType,
 	}
 
 	// Stat input files before Merge deletes them from disk.

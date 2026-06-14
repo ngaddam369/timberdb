@@ -29,6 +29,19 @@ const (
 	// footerMagic is the 8-byte sentinel at the end of every valid SSTable footer.
 	footerMagic = uint64(0x54494D4245524442) // "TIMBERDB"
 
+	// headerMagic is the 8-byte sentinel at the start of every v1 SSTable file.
+	// The bytes spell "TMRBHDR1" on disk (little-endian uint64 = 0x3152444842524D54).
+	// It differs from footerMagic so readers can unambiguously detect v0 vs v1.
+	headerMagic = uint64(0x3152444842524D54) // "TMRBHDR1"
+
+	// headerSize is the byte length of the v1 file header.
+	// Layout (16 bytes, all little-endian):
+	//   [0:8]   headerMagic  uint64
+	//   [8:10]  version      uint16  (1 for v1)
+	//   [10:12] flags        uint16  (lower byte = CompressionType)
+	//   [12:16] reserved     [4]byte (zero)
+	headerSize = 16
+
 	// defaultBlockSize is the target encoded size for each data block.
 	defaultBlockSize = 32 * 1024 // 32 KB
 
@@ -49,6 +62,10 @@ type WriterOptions struct {
 	// PartitionStart and PartitionEnd are the inclusive/exclusive window bounds (Unix ns).
 	PartitionStart int64
 	PartitionEnd   int64
+	// CompressionType selects the block compression algorithm. Default: CompressionNone.
+	// A non-None value causes a 16-byte v1 file header to be prepended before the first
+	// data block, allowing readers to detect and decompress the file automatically.
+	CompressionType CompressionType
 }
 
 // DefaultWriterOptions returns WriterOptions with sensible defaults.
@@ -115,6 +132,8 @@ type Writer struct {
 
 // NewWriter creates an SSTable writer that writes to path.
 // The file is created or truncated on open.
+// When opts.CompressionType != CompressionNone a 16-byte v1 file header is written first,
+// advancing the initial block offset to headerSize (16).
 func NewWriter(path string, opts WriterOptions) (*Writer, error) {
 	if opts.BlockSizeBytes <= 0 {
 		opts.BlockSizeBytes = defaultBlockSize
@@ -130,6 +149,20 @@ func NewWriter(path string, opts WriterOptions) (*Writer, error) {
 	}
 	if opts.IndexSources {
 		w.srcIndex = make(map[string]*srcEntry)
+	}
+	if opts.CompressionType != CompressionNone {
+		var hdr [headerSize]byte
+		binary.LittleEndian.PutUint64(hdr[0:], headerMagic)
+		binary.LittleEndian.PutUint16(hdr[8:], 1) // version 1
+		binary.LittleEndian.PutUint16(hdr[10:], uint16(opts.CompressionType))
+		// hdr[12:16] remain zero (reserved)
+		if _, err := w.bw.Write(hdr[:]); err != nil {
+			if cerr := f.Close(); cerr != nil {
+				slog.Error("sstable: close writer file after header error", "err", cerr)
+			}
+			return nil, err
+		}
+		w.offset = headerSize
 	}
 	return w, nil
 }
@@ -184,6 +217,13 @@ func (w *Writer) flushBlock() error {
 	w.newSrcIDs = w.newSrcIDs[:0]
 
 	encoded := encodeBlock(w.pending)
+	if w.opts.CompressionType != CompressionNone {
+		compressed, cerr := compress(w.opts.CompressionType, encoded)
+		if cerr != nil {
+			return cerr
+		}
+		encoded = compressed
+	}
 	if _, err := w.bw.Write(encoded); err != nil {
 		return err
 	}

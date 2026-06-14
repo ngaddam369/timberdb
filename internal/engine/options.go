@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/ngaddam369/timberdb/internal/partition"
+	"github.com/ngaddam369/timberdb/internal/sstable"
 	"github.com/ngaddam369/timberdb/internal/wal"
 )
 
@@ -42,6 +43,11 @@ type Options struct {
 	// MetricsAddr is the address on which the Prometheus /metrics endpoint is
 	// served. Empty string disables the endpoint (default: ":9090").
 	MetricsAddr string
+	// CompressionType selects the block compression algorithm applied when writing
+	// new SSTables (both flush and compaction output). CompressionNone is the default
+	// and produces v0 files compatible with all reader versions. A non-None value
+	// produces v1 files with a 16-byte header that readers auto-detect.
+	CompressionType sstable.CompressionType
 }
 
 // DefaultOptions returns a production-ready Options with conservative defaults.

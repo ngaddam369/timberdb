@@ -20,11 +20,12 @@ var ErrInvalidMagic = errors.New("sstable: invalid magic — not a valid SSTable
 // Multiple goroutines may call Scan concurrently.
 // Close must not be called concurrently with any other method.
 type Reader struct {
-	f         *os.File
-	meta      SSTableMeta
-	timeIndex []timeIndexEntry
-	srcIndex  map[string]srcEntry // nil when no source index was written
-	mmap      []byte              // nil on Windows or when there are no data blocks
+	f               *os.File
+	meta            SSTableMeta
+	timeIndex       []timeIndexEntry
+	srcIndex        map[string]srcEntry // nil when no source index was written
+	mmap            []byte              // nil on Windows or when there are no data blocks
+	compressionType CompressionType     // CompressionNone for v0 files
 }
 
 // NewReader opens path, validates the footer, and loads the time index into memory.
@@ -90,6 +91,24 @@ func NewReader(path string) (*Reader, error) {
 	}
 
 	r := &Reader{f: f, meta: meta, timeIndex: timeIndex, srcIndex: srcIndex}
+
+	// Detect v1 format: if the file is large enough to hold a header plus at least
+	// one data block, check whether the first 8 bytes equal headerMagic.
+	if meta.TimeIndexOffset >= headerSize {
+		var first8 [8]byte
+		if _, err := f.ReadAt(first8[:], 0); err != nil {
+			return nil, err
+		}
+		if binary.LittleEndian.Uint64(first8[:]) == headerMagic {
+			var hdr [headerSize]byte
+			if _, err := f.ReadAt(hdr[:], 0); err != nil {
+				return nil, err
+			}
+			flags := binary.LittleEndian.Uint16(hdr[10:12])
+			r.compressionType = CompressionType(flags & 0xFF)
+		}
+	}
+
 	if err := r.initMmap(); err != nil {
 		return nil, err
 	}
@@ -170,6 +189,13 @@ func (r *Reader) readBlockRaw(idx int) (payload []byte, count int, err error) {
 			return nil, 0, err
 		}
 		buf = b
+	}
+	if r.compressionType != CompressionNone {
+		decompressed, derr := decompress(r.compressionType, buf)
+		if derr != nil {
+			return nil, 0, ErrBlockCorrupt
+		}
+		buf = decompressed
 	}
 	payload, err = validateBlock(buf)
 	if err != nil {
