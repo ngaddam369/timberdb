@@ -120,5 +120,10 @@ func appendBatch(e *engine.Engine, path string) error {
 	if err := scanner.Err(); err != nil {
 		return err
 	}
-	return e.AppendBatch(recs)
+	for _, r := range recs {
+		if err := e.Append(r); err != nil {
+			return err
+		}
+	}
+	return nil
 }

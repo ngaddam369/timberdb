@@ -32,21 +32,28 @@ func TestCompactionIntegration(t *testing.T) {
 			}))
 		}
 
-		// Poll until all records are visible (background flushes completed).
+		// Poll until all records are visible and capture that snapshot atomically.
+		// A separate drainEngine call after Eventually would be racy: SwapMemtable can
+		// clear the in-memory view before the new SSTable is registered in e.files,
+		// making records transiently invisible between two consecutive scans.
+		var got []record.Record
 		require.Eventually(t, func() bool {
 			it, err := e.Scan(base, base.Add(time.Hour), nil)
 			if err != nil {
 				return false
 			}
-			var count int
+			var records []record.Record
 			for it.Next() {
-				count++
+				records = append(records, it.Record())
 			}
 			_ = it.Close()
-			return count == n
+			if len(records) != n {
+				return false
+			}
+			got = records
+			return true
 		}, 5*time.Second, 10*time.Millisecond, "records not all flushed within timeout")
 
-		got := drainEngine(t, e, base, base.Add(time.Hour))
 		require.Len(t, got, n)
 		for i := 1; i < len(got); i++ {
 			assert.LessOrEqual(t, got[i-1].Timestamp, got[i].Timestamp)

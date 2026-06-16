@@ -72,7 +72,6 @@ func tsKey(ts int64) []byte {
 func BenchmarkTimberDBAppend(b *testing.B) {
 	dir := b.TempDir()
 	opts := engine.DefaultOptions()
-	opts.MetricsAddr = ""
 	opts.MemtableSizeBytes = 64 << 20 // prevent auto-flush during benchmark
 	opts.CompactionCheckInterval = time.Hour
 	opts.RetentionCheckInterval = time.Hour
@@ -107,7 +106,6 @@ func BenchmarkTimberDBScan(b *testing.B) {
 	// Set up: write benchScanN records and flush them all to SST via Close.
 	{
 		opts := engine.DefaultOptions()
-		opts.MetricsAddr = ""
 		opts.MemtableSizeBytes = 64 << 20
 		opts.CompactionCheckInterval = time.Hour
 		opts.RetentionCheckInterval = time.Hour
@@ -134,7 +132,6 @@ func BenchmarkTimberDBScan(b *testing.B) {
 
 	// Reopen for scan.
 	opts := engine.DefaultOptions()
-	opts.MetricsAddr = ""
 	opts.CompactionCheckInterval = time.Hour
 	opts.RetentionCheckInterval = time.Hour
 	e, err := engine.Open(dir, opts)
@@ -163,6 +160,41 @@ func BenchmarkTimberDBScan(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+func BenchmarkTimberDBConcurrentAppend(b *testing.B) {
+	dir := b.TempDir()
+	opts := engine.DefaultOptions()
+	opts.MemtableSizeBytes = 64 << 20
+	opts.CompactionCheckInterval = time.Hour
+	opts.RetentionCheckInterval = time.Hour
+	opts.CompressionType = sstable.CompressionZstd
+	e, err := engine.Open(dir, opts)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	src := []byte("bench-concurrent")
+	b.SetBytes(benchPayloadSize)
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		ts := benchBase.UnixNano()
+		for pb.Next() {
+			if err := e.Append(record.Record{
+				Timestamp: ts,
+				SourceID:  src,
+				Payload:   benchPayload,
+			}); err != nil {
+				b.Fatal(err)
+			}
+			ts++
+		}
+	})
+	b.StopTimer()
+	if err := e.Close(); err != nil {
+		b.Fatal(err)
+	}
+	reportSA(b, dir)
 }
 
 // --- badger benchmarks ---

@@ -43,7 +43,6 @@ func baseOpts(retentionDuration time.Duration) engine.Options {
 	opts.RetentionCheckInterval = 10 * time.Millisecond
 	opts.CompactionCheckInterval = time.Hour
 	opts.MaxFilesPerPartition = 100
-	opts.MetricsAddr = ""
 	return opts
 }
 

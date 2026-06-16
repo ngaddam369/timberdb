@@ -13,7 +13,6 @@ import (
 
 func openEngine(t *testing.T, dir string, opts engine.Options) *engine.Engine {
 	t.Helper()
-	opts.MetricsAddr = ""
 	e, err := engine.Open(dir, opts)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
@@ -67,7 +66,6 @@ func TestEngineIntegration(t *testing.T) {
 		// Session 1: write and close.
 		func() {
 			opts := engine.DefaultOptions()
-			opts.MetricsAddr = ""
 			e, err := engine.Open(dir, opts)
 			require.NoError(t, err)
 			defer func() { require.NoError(t, e.Close()) }()
@@ -89,7 +87,6 @@ func TestEngineIntegration(t *testing.T) {
 
 	t.Run("flush_and_scan", func(t *testing.T) {
 		opts := engine.DefaultOptions()
-		opts.MetricsAddr = ""
 		opts.MemtableSizeBytes = 1 // force flush on every append
 
 		dir := t.TempDir()

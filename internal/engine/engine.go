@@ -4,11 +4,9 @@
 package engine
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,7 +50,6 @@ type Engine struct {
 	closedReaders []*sstable.Reader
 	strategy      compaction.Strategy
 	metrics       *metrics.Metrics
-	metricsServer *http.Server // nil when MetricsAddr == ""
 	closed        bool
 }
 
@@ -183,17 +180,6 @@ func Open(dir string, opts Options) (*Engine, error) {
 	e.wal = activeWAL
 
 	e.metrics = metrics.New()
-	if opts.MetricsAddr != "" {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", e.metrics.Handler())
-		srv := &http.Server{Addr: opts.MetricsAddr, Handler: mux}
-		e.metricsServer = srv
-		e.wg.Go(func() {
-			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				slog.Error("engine: metrics server failed", "addr", opts.MetricsAddr, "err", err)
-			}
-		})
-	}
 
 	e.wg.Go(e.runFlusher)
 	e.wg.Go(e.runCompactor)
@@ -231,17 +217,6 @@ func (e *Engine) Append(rec record.Record) error {
 		select {
 		case e.flushCh <- p:
 		default: // flush already queued for this partition
-		}
-	}
-	return nil
-}
-
-// AppendBatch writes every record in recs via Append. The batch is not atomic —
-// individual records are durable as soon as Append returns for each one.
-func (e *Engine) AppendBatch(recs []record.Record) error {
-	for _, r := range recs {
-		if err := e.Append(r); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -298,13 +273,6 @@ func (e *Engine) Close() error {
 	}
 	e.closed = true
 	close(e.closeCh)
-	if e.metricsServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := e.metricsServer.Shutdown(ctx); err != nil {
-			slog.Error("engine: metrics server shutdown failed", "err", err)
-		}
-	}
 	e.mu.Unlock()
 
 	e.wg.Wait()

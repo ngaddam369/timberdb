@@ -73,7 +73,6 @@ func runCrashWorker() {
 
 	opts := engine.DefaultOptions()
 	opts.WALSyncMode = wal.SyncAlways
-	opts.MetricsAddr = ""
 
 	switch point {
 	case "before_close":
@@ -167,7 +166,6 @@ func verifyRecovery(t *testing.T, dir string, n int) {
 	t.Helper()
 	opts := engine.DefaultOptions()
 	opts.WALSyncMode = wal.SyncAlways
-	opts.MetricsAddr = ""
 	opts.CompactionCheckInterval = time.Hour
 	opts.RetentionCheckInterval = time.Hour
 

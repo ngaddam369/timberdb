@@ -28,7 +28,7 @@ func TestLateArrivalPrecision(t *testing.T) {
 		opts := engine.DefaultOptions()
 		opts.LateArrivalWindow = window
 		opts.LateArrivalMode = mode
-		opts.MetricsAddr = ""
+
 		opts.MemtableSizeBytes = 64 << 20 // no auto-flush during the test
 		opts.CompactionCheckInterval = time.Hour
 		opts.RetentionCheckInterval = time.Hour
@@ -73,7 +73,7 @@ func TestLateArrivalPrecision(t *testing.T) {
 		opts := engine.DefaultOptions()
 		opts.LateArrivalWindow = 24 * time.Hour // large window so the record is "late" but still routed
 		opts.LateArrivalMode = partition.Tolerant
-		opts.MetricsAddr = ""
+
 		opts.MemtableSizeBytes = 64 << 20
 		opts.CompactionCheckInterval = time.Hour
 		opts.RetentionCheckInterval = time.Hour

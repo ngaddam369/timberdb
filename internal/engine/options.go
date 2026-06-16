@@ -40,9 +40,6 @@ type Options struct {
 	// for merge eligibility (default: 30s). Compaction is also triggered immediately
 	// after each flush via an internal signal.
 	CompactionCheckInterval time.Duration
-	// MetricsAddr is the address on which the Prometheus /metrics endpoint is
-	// served. Empty string disables the endpoint (default: ":9090").
-	MetricsAddr string
 	// CompressionType selects the block compression algorithm applied when writing
 	// new SSTables (both flush and compaction output). CompressionNone is the default
 	// and produces v0 files compatible with all reader versions. A non-None value
@@ -64,6 +61,5 @@ func DefaultOptions() Options {
 		RetentionDuration:       0,
 		RetentionCheckInterval:  time.Hour,
 		CompactionCheckInterval: 30 * time.Second,
-		MetricsAddr:             ":9090",
 	}
 }

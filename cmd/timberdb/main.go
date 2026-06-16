@@ -17,7 +17,6 @@ func main() {
 		newAppendCmd(),
 		newScanCmd(),
 		newInspectCmd(),
-		newBenchCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
