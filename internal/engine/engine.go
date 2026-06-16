@@ -25,6 +25,9 @@ import (
 // ErrClosed is returned by Append and Scan after Close has been called.
 var ErrClosed = errors.New("timberdb: engine is closed")
 
+// ErrInvalidBucketWidth is returned by Aggregate when BucketWidth is not positive.
+var ErrInvalidBucketWidth = errors.New("timberdb: AggregateOpts.BucketWidth must be positive")
+
 // ScanOptions configures a call to Scan. Passing nil is equivalent to zero-value options
 // (no source filter). This type is extended by future fields without breaking callers.
 type ScanOptions struct {
@@ -772,6 +775,138 @@ func (e *Engine) Partitions() []PartitionInfo {
 		})
 	}
 	return infos
+}
+
+// AggFn selects the aggregation function applied per bucket by Aggregate.
+type AggFn int
+
+const (
+	// AggCount returns the number of records that fall within each bucket.
+	AggCount AggFn = iota
+	// AggRate returns records per second; retrieve it with Bucket.Rate().
+	AggRate
+)
+
+// AggregateOpts configures a call to Aggregate.
+type AggregateOpts struct {
+	// SourceID restricts aggregation to records from this source. Nil means all sources.
+	SourceID []byte
+	// BucketWidth is the duration of each result bucket. Must be positive.
+	BucketWidth time.Duration
+	// Fn selects the aggregation function.
+	Fn AggFn
+}
+
+// Bucket holds the aggregated result for one time window.
+type Bucket struct {
+	Start time.Time
+	End   time.Time
+	Count int64
+}
+
+// Rate returns the number of records per second in this bucket.
+func (b Bucket) Rate() float64 { return float64(b.Count) / b.End.Sub(b.Start).Seconds() }
+
+// Aggregate returns per-bucket record counts over [start, end).
+// For version-2 (columnar) SSTables with no source filter, only the timestamps column
+// is read per block — payload data is skipped entirely.
+func (e *Engine) Aggregate(start, end time.Time, opts AggregateOpts) ([]Bucket, error) {
+	if opts.BucketWidth <= 0 {
+		return nil, ErrInvalidBucketWidth
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.closed {
+		return nil, ErrClosed
+	}
+
+	startNs := start.UnixNano()
+	endNs := end.UnixNano()
+	if endNs <= startNs {
+		return nil, nil
+	}
+
+	bwNs := opts.BucketWidth.Nanoseconds()
+	nBuckets := int((endNs - startNs + bwNs - 1) / bwNs)
+	buckets := make([]Bucket, nBuckets)
+	for i := range nBuckets {
+		buckets[i] = Bucket{
+			Start: start.Add(time.Duration(i) * opts.BucketWidth),
+			End:   start.Add(time.Duration(i+1) * opts.BucketWidth),
+		}
+	}
+
+	addCount := func(ts int64) {
+		if ts < startNs || ts >= endNs {
+			return
+		}
+		if idx := int((ts - startNs) / bwNs); idx < nBuckets {
+			buckets[idx].Count++
+		}
+	}
+
+	for _, p := range e.router.Overlapping(startNs, endNs) {
+		// Memtable is always row-path regardless of ColumnOriented setting.
+		it := p.Scan(startNs, endNs, opts.SourceID)
+		for it.Next() {
+			addCount(it.View().Timestamp)
+		}
+		if iterErr := it.Err(); iterErr != nil {
+			if cerr := it.Close(); cerr != nil {
+				slog.Error("engine: aggregate memtable close failed", "err", cerr)
+			}
+			return nil, iterErr
+		}
+		if cerr := it.Close(); cerr != nil {
+			return nil, cerr
+		}
+
+		for _, r := range e.files[p.Window] {
+			meta := r.Meta()
+			if meta.MaxTimestamp < startNs || meta.MinTimestamp >= endNs {
+				continue
+			}
+
+			// Columnar fast path: read only the timestamps section of each block.
+			// Only available when there is no source filter (we have no column to filter on).
+			if r.IsColumnar() && len(opts.SourceID) == 0 {
+				for i := range r.TimeIndexLen() {
+					if r.TimeIndexEntry(i) >= endNs {
+						break
+					}
+					timestamps, err := r.ScanTimestamps(i, startNs, endNs)
+					if err != nil {
+						return nil, err
+					}
+					for _, ts := range timestamps {
+						addCount(ts)
+					}
+				}
+				continue
+			}
+
+			// Row scan fallback: full record iteration with optional source filter.
+			sit, err := r.Scan(startNs, endNs, opts.SourceID)
+			if err != nil {
+				return nil, err
+			}
+			for sit.Next() {
+				addCount(sit.View().Timestamp)
+			}
+			if iterErr := sit.Err(); iterErr != nil {
+				if cerr := sit.Close(); cerr != nil {
+					slog.Error("engine: aggregate SSTable close failed", "err", cerr)
+				}
+				return nil, iterErr
+			}
+			if cerr := sit.Close(); cerr != nil {
+				return nil, cerr
+			}
+		}
+	}
+
+	return buckets, nil
 }
 
 // countingIter wraps a record.Iterator to track per-scan record count and duration.

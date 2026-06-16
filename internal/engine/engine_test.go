@@ -209,6 +209,110 @@ func TestMergeIteratorView(t *testing.T) {
 	assert.Equal(t, len(want), i)
 }
 
+func TestEngineAggregate(t *testing.T) {
+	t.Run("count", func(t *testing.T) {
+		e := openTestEngine(t, DefaultOptions())
+		base := time.Now().Add(time.Hour).Truncate(time.Hour)
+
+		// 120 records at 1/second spans exactly 2 minutes.
+		for i := range 120 {
+			require.NoError(t, e.Append(record.Record{
+				Timestamp: base.Add(time.Duration(i) * time.Second).UnixNano(),
+				SourceID:  []byte("src"),
+				Payload:   []byte("p"),
+			}))
+		}
+
+		buckets, err := e.Aggregate(base, base.Add(2*time.Minute), AggregateOpts{
+			BucketWidth: time.Minute,
+			Fn:          AggCount,
+		})
+		require.NoError(t, err)
+		require.Len(t, buckets, 2)
+		assert.Equal(t, int64(60), buckets[0].Count)
+		assert.Equal(t, int64(60), buckets[1].Count)
+		assert.Equal(t, base, buckets[0].Start)
+		assert.Equal(t, base.Add(time.Minute), buckets[0].End)
+		assert.Equal(t, base.Add(time.Minute), buckets[1].Start)
+		assert.Equal(t, base.Add(2*time.Minute), buckets[1].End)
+	})
+
+	t.Run("rate", func(t *testing.T) {
+		e := openTestEngine(t, DefaultOptions())
+		base := time.Now().Add(time.Hour).Truncate(time.Hour)
+
+		for i := range 120 {
+			require.NoError(t, e.Append(record.Record{
+				Timestamp: base.Add(time.Duration(i) * time.Second).UnixNano(),
+				SourceID:  []byte("src"),
+				Payload:   []byte("p"),
+			}))
+		}
+
+		buckets, err := e.Aggregate(base, base.Add(2*time.Minute), AggregateOpts{
+			BucketWidth: time.Minute,
+			Fn:          AggRate,
+		})
+		require.NoError(t, err)
+		require.Len(t, buckets, 2)
+		// 60 records / 60 seconds = 1.0 records/sec
+		assert.InDelta(t, 1.0, buckets[0].Rate(), 0.01)
+		assert.InDelta(t, 1.0, buckets[1].Rate(), 0.01)
+	})
+
+	t.Run("source_filter", func(t *testing.T) {
+		e := openTestEngine(t, DefaultOptions())
+		base := time.Now().Add(time.Hour).Truncate(time.Hour)
+
+		// First 60 records from src-a (first minute), next 60 from src-b (second minute).
+		for i := range 120 {
+			src := []byte("src-a")
+			if i >= 60 {
+				src = []byte("src-b")
+			}
+			require.NoError(t, e.Append(record.Record{
+				Timestamp: base.Add(time.Duration(i) * time.Second).UnixNano(),
+				SourceID:  src,
+				Payload:   []byte("p"),
+			}))
+		}
+
+		buckets, err := e.Aggregate(base, base.Add(2*time.Minute), AggregateOpts{
+			SourceID:    []byte("src-a"),
+			BucketWidth: time.Minute,
+			Fn:          AggCount,
+		})
+		require.NoError(t, err)
+		require.Len(t, buckets, 2)
+		assert.Equal(t, int64(60), buckets[0].Count, "src-a is only in the first minute")
+		assert.Equal(t, int64(0), buckets[1].Count)
+	})
+
+	t.Run("empty_range", func(t *testing.T) {
+		e := openTestEngine(t, DefaultOptions())
+		base := time.Now().Add(time.Hour).Truncate(time.Hour)
+
+		buckets, err := e.Aggregate(base, base.Add(time.Minute), AggregateOpts{
+			BucketWidth: time.Minute,
+			Fn:          AggCount,
+		})
+		require.NoError(t, err)
+		require.Len(t, buckets, 1)
+		assert.Equal(t, int64(0), buckets[0].Count)
+	})
+
+	t.Run("invalid_bucket_width", func(t *testing.T) {
+		e := openTestEngine(t, DefaultOptions())
+		base := time.Now().Add(time.Hour).Truncate(time.Hour)
+
+		_, err := e.Aggregate(base, base.Add(time.Minute), AggregateOpts{
+			BucketWidth: 0,
+			Fn:          AggCount,
+		})
+		require.ErrorIs(t, err, ErrInvalidBucketWidth)
+	})
+}
+
 // staticIter is a test-only iterator over an in-memory slice.
 type staticIter struct {
 	recs []record.Record
