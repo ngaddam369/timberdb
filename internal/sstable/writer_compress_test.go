@@ -109,3 +109,43 @@ func TestWriterV1OffsetStartsAfterHeader(t *testing.T) {
 	assert.GreaterOrEqual(t, r.Meta().TimeIndexOffset, uint64(headerSize),
 		"time index offset must account for the 16-byte file header")
 }
+
+func TestWriterV2HeaderPresent(t *testing.T) {
+	dir := t.TempDir()
+	path := buildSSTable(t, dir, "v2.sst",
+		WriterOptions{ColumnOriented: true, BlockSizeBytes: 4096},
+		compressRecords(10))
+
+	f, err := os.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { f.Close() })
+
+	var hdr [headerSize]byte
+	_, err = f.ReadAt(hdr[:], 0)
+	require.NoError(t, err)
+
+	assert.Equal(t, headerMagic, binary.LittleEndian.Uint64(hdr[0:8]),
+		"v2 file must start with headerMagic")
+	assert.Equal(t, uint16(2), binary.LittleEndian.Uint16(hdr[8:10]),
+		"v2 file header version must be 2")
+}
+
+func TestWriterV2WithCompressionHeader(t *testing.T) {
+	dir := t.TempDir()
+	path := buildSSTable(t, dir, "v2z.sst",
+		WriterOptions{ColumnOriented: true, CompressionType: CompressionZstd, BlockSizeBytes: 4096},
+		compressRecords(10))
+
+	f, err := os.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { f.Close() })
+
+	var hdr [headerSize]byte
+	_, err = f.ReadAt(hdr[:], 0)
+	require.NoError(t, err)
+
+	assert.Equal(t, uint16(2), binary.LittleEndian.Uint16(hdr[8:10]),
+		"columnar+compressed file must have version 2")
+	assert.Equal(t, uint16(CompressionZstd), binary.LittleEndian.Uint16(hdr[10:12]),
+		"compression type must be stored in flags")
+}

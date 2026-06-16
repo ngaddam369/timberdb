@@ -153,6 +153,96 @@ func TestScanDecompAllocCount(t *testing.T) {
 		"want ≤ 20 allocs/scan (buffer reuse), got %.1f", allocs)
 }
 
+func TestReaderV2RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	recs := compressRecords(30)
+	path := buildSSTable(t, dir, "v2.sst",
+		WriterOptions{ColumnOriented: true, BlockSizeBytes: 512},
+		recs)
+
+	r, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { r.Close() })
+
+	assert.True(t, r.IsColumnar(), "reader must detect v2 (columnar) file")
+
+	got := collectAllRecords(t, r)
+	require.Len(t, got, len(recs))
+	for i, want := range recs {
+		assert.Equal(t, want.Timestamp, got[i].Timestamp, "record %d timestamp", i)
+		assert.Equal(t, want.SourceID, got[i].SourceID, "record %d sourceID", i)
+		assert.Equal(t, want.Payload, got[i].Payload, "record %d payload", i)
+	}
+}
+
+func TestReaderV2WithCompressionRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	recs := compressRecords(30)
+	path := buildSSTable(t, dir, "v2z.sst",
+		WriterOptions{ColumnOriented: true, CompressionType: CompressionZstd, BlockSizeBytes: 512},
+		recs)
+
+	r, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { r.Close() })
+
+	assert.True(t, r.IsColumnar())
+
+	got := collectAllRecords(t, r)
+	assert.Len(t, got, len(recs))
+}
+
+func TestMixedVersionPartitionScan(t *testing.T) {
+	dir := t.TempDir()
+
+	v0Recs := []record.Record{
+		{Timestamp: 1000, SourceID: []byte("s"), Payload: []byte("v0-a")},
+		{Timestamp: 1001, SourceID: []byte("s"), Payload: []byte("v0-b")},
+	}
+	v1Recs := []record.Record{
+		{Timestamp: 2000, SourceID: []byte("s"), Payload: []byte("v1-a")},
+		{Timestamp: 2001, SourceID: []byte("s"), Payload: []byte("v1-b")},
+	}
+	v2Recs := []record.Record{
+		{Timestamp: 3000, SourceID: []byte("s"), Payload: []byte("v2-a")},
+		{Timestamp: 3001, SourceID: []byte("s"), Payload: []byte("v2-b")},
+	}
+
+	pathV0 := buildSSTable(t, dir, "v0.sst", WriterOptions{}, v0Recs)
+	pathV1 := buildSSTable(t, dir, "v1.sst", WriterOptions{CompressionType: CompressionZstd}, v1Recs)
+	pathV2 := buildSSTable(t, dir, "v2.sst", WriterOptions{ColumnOriented: true}, v2Recs)
+
+	r0, err := NewReader(pathV0)
+	require.NoError(t, err)
+	t.Cleanup(func() { r0.Close() })
+
+	r1, err := NewReader(pathV1)
+	require.NoError(t, err)
+	t.Cleanup(func() { r1.Close() })
+
+	r2, err := NewReader(pathV2)
+	require.NoError(t, err)
+	t.Cleanup(func() { r2.Close() })
+
+	assert.False(t, r0.IsColumnar(), "v0 must not be columnar")
+	assert.False(t, r1.IsColumnar(), "v1 must not be columnar")
+	assert.True(t, r2.IsColumnar(), "v2 must be columnar")
+
+	var got []record.Record
+	for _, r := range []*Reader{r0, r1, r2} {
+		it, err := r.Scan(1000, 4000, nil)
+		require.NoError(t, err)
+		for it.Next() {
+			got = append(got, it.Record())
+		}
+		require.NoError(t, it.Err())
+		require.NoError(t, it.Close())
+	}
+
+	want := append(append(v0Recs, v1Recs...), v2Recs...)
+	assert.Equal(t, want, got)
+}
+
 func TestReaderConcurrentCompressed(t *testing.T) {
 	dir := t.TempDir()
 	recs := compressRecords(200)

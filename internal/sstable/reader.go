@@ -26,6 +26,7 @@ type Reader struct {
 	srcIndex        map[string]srcEntry // nil when no source index was written
 	mmap            []byte              // nil on Windows or when there are no data blocks
 	compressionType CompressionType     // CompressionNone for v0 files
+	columnar        bool                // true for version-2 (column-oriented) files
 }
 
 // NewReader opens path, validates the footer, and loads the time index into memory.
@@ -104,8 +105,12 @@ func NewReader(path string) (*Reader, error) {
 			if _, err := f.ReadAt(hdr[:], 0); err != nil {
 				return nil, err
 			}
+			version := binary.LittleEndian.Uint16(hdr[8:10])
 			flags := binary.LittleEndian.Uint16(hdr[10:12])
 			r.compressionType = CompressionType(flags & 0xFF)
+			if version >= 2 {
+				r.columnar = true
+			}
 		}
 	}
 
@@ -121,6 +126,12 @@ func NewReader(path string) (*Reader, error) {
 // before calling Scan.
 func (r *Reader) Meta() SSTableMeta {
 	return r.meta
+}
+
+// IsColumnar reports whether this is a version-2 (column-oriented) SSTable.
+// When true, the Aggregate path can use timestamps-only block decoding, skipping payloads.
+func (r *Reader) IsColumnar() bool {
+	return r.columnar
 }
 
 // Scan returns an iterator over records with Timestamp in [start, end),
@@ -146,6 +157,21 @@ func (r *Reader) Scan(start, end int64, sourceID []byte) (record.Iterator, error
 	})
 	if startBlock > 0 {
 		startBlock--
+	}
+
+	if r.columnar {
+		recs, err := r.readColBlock(startBlock)
+		if err != nil {
+			return nil, err
+		}
+		return &colScanIterator{
+			r:         r,
+			start:     start,
+			end:       end,
+			sourceID:  sourceID,
+			blockIdx:  startBlock,
+			blockRecs: recs,
+		}, nil
 	}
 
 	blockData, blockRem, err := r.readBlockRaw(startBlock, nil)
@@ -350,3 +376,135 @@ func (emptyIter) Record() record.Record   { return record.Record{} }
 func (emptyIter) View() record.RecordView { return record.RecordView{} }
 func (emptyIter) Close() error            { return nil }
 func (emptyIter) Err() error              { return nil }
+
+// readColBlock reads the columnar block at idx, decompresses if needed, and decodes
+// it into a slice of records. Unlike readBlockRaw it returns owned copies of all fields.
+func (r *Reader) readColBlock(idx int) ([]record.Record, error) {
+	e := r.timeIndex[idx]
+	var buf []byte
+	if r.mmap != nil {
+		buf = r.mmap[e.offset : e.offset+uint64(e.size)]
+	} else {
+		b := make([]byte, e.size)
+		if _, err := r.f.ReadAt(b, int64(e.offset)); err != nil {
+			return nil, err
+		}
+		buf = b
+	}
+	if r.compressionType != CompressionNone {
+		decompressed, derr := decompress(r.compressionType, buf, nil)
+		if derr != nil {
+			return nil, ErrBlockCorrupt
+		}
+		buf = decompressed
+	}
+	return decodeColBlock(buf)
+}
+
+// ScanTimestamps returns the timestamps of all records in the block at idx that
+// fall within [start, end), without decoding sourceIDs or payloads.
+// Only valid for columnar (version-2) files.
+func (r *Reader) ScanTimestamps(idx int, start, end int64) ([]int64, error) {
+	e := r.timeIndex[idx]
+	var buf []byte
+	if r.mmap != nil {
+		buf = r.mmap[e.offset : e.offset+uint64(e.size)]
+	} else {
+		b := make([]byte, e.size)
+		if _, err := r.f.ReadAt(b, int64(e.offset)); err != nil {
+			return nil, err
+		}
+		buf = b
+	}
+	if r.compressionType != CompressionNone {
+		decompressed, derr := decompress(r.compressionType, buf, nil)
+		if derr != nil {
+			return nil, ErrBlockCorrupt
+		}
+		buf = decompressed
+	}
+	all, err := decodeColBlockTimestamps(buf)
+	if err != nil {
+		return nil, err
+	}
+	filtered := all[:0]
+	for _, ts := range all {
+		if ts >= start && ts < end {
+			filtered = append(filtered, ts)
+		}
+	}
+	return filtered, nil
+}
+
+// TimeIndexLen returns the number of entries in the time index (one per data block).
+func (r *Reader) TimeIndexLen() int { return len(r.timeIndex) }
+
+// TimeIndexEntry returns the min-timestamp for the block at position i.
+func (r *Reader) TimeIndexEntry(i int) (minTimestamp int64) {
+	return r.timeIndex[i].minTimestamp
+}
+
+// colScanIterator iterates over records in a columnar (version-2) SSTable.
+// It decodes one block at a time, keeping decoded records in memory until the block
+// is exhausted, then loads the next matching block.
+type colScanIterator struct {
+	r        *Reader
+	start    int64
+	end      int64
+	sourceID []byte
+
+	blockIdx  int
+	blockRecs []record.Record
+	recIdx    int
+	current   record.RecordView
+	err       error
+}
+
+// Next advances to the next matching record.
+func (it *colScanIterator) Next() bool {
+	for {
+		for it.recIdx < len(it.blockRecs) {
+			r := it.blockRecs[it.recIdx]
+			it.recIdx++
+			if r.Timestamp >= it.end {
+				return false
+			}
+			if r.Timestamp < it.start {
+				continue
+			}
+			if len(it.sourceID) > 0 && !bytes.Equal(r.SourceID, it.sourceID) {
+				continue
+			}
+			it.current = record.RecordView(r)
+			return true
+		}
+
+		it.blockIdx++
+		if it.blockIdx >= len(it.r.timeIndex) {
+			return false
+		}
+		if it.r.timeIndex[it.blockIdx].minTimestamp >= it.end {
+			return false
+		}
+		recs, err := it.r.readColBlock(it.blockIdx)
+		if err != nil {
+			it.err = err
+			return false
+		}
+		it.blockRecs = recs
+		it.recIdx = 0
+	}
+}
+
+// View returns a zero-copy view of the current record. Slices are valid until the
+// next call to Next that crosses a block boundary.
+func (it *colScanIterator) View() record.RecordView { return it.current }
+
+// Record returns a fully owned copy of the current record.
+func (it *colScanIterator) Record() record.Record { return it.current.Clone() }
+
+// Close is a no-op; the Reader owns the file lifetime.
+func (it *colScanIterator) Close() error { return nil }
+
+// Err returns the first read error encountered during iteration, or nil.
+func (it *colScanIterator) Err() error { return it.err }

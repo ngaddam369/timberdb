@@ -63,9 +63,13 @@ type WriterOptions struct {
 	PartitionStart int64
 	PartitionEnd   int64
 	// CompressionType selects the block compression algorithm. Default: CompressionNone.
-	// A non-None value causes a 16-byte v1 file header to be prepended before the first
+	// A non-None value causes a file header (version 1) to be prepended before the first
 	// data block, allowing readers to detect and decompress the file automatically.
 	CompressionType CompressionType
+	// ColumnOriented writes column-oriented blocks instead of row-oriented blocks.
+	// This causes a version-2 file header to be written, enabling the reader to use
+	// the fast timestamps-only decode path for count and rate aggregations.
+	ColumnOriented bool
 }
 
 // DefaultWriterOptions returns WriterOptions with sensible defaults.
@@ -150,10 +154,14 @@ func NewWriter(path string, opts WriterOptions) (*Writer, error) {
 	if opts.IndexSources {
 		w.srcIndex = make(map[string]*srcEntry)
 	}
-	if opts.CompressionType != CompressionNone {
+	if opts.CompressionType != CompressionNone || opts.ColumnOriented {
+		version := uint16(1)
+		if opts.ColumnOriented {
+			version = 2
+		}
 		var hdr [headerSize]byte
 		binary.LittleEndian.PutUint64(hdr[0:], headerMagic)
-		binary.LittleEndian.PutUint16(hdr[8:], 1) // version 1
+		binary.LittleEndian.PutUint16(hdr[8:], version)
 		binary.LittleEndian.PutUint16(hdr[10:], uint16(opts.CompressionType))
 		// hdr[12:16] remain zero (reserved)
 		if _, err := w.bw.Write(hdr[:]); err != nil {
@@ -216,7 +224,12 @@ func (w *Writer) flushBlock() error {
 	}
 	w.newSrcIDs = w.newSrcIDs[:0]
 
-	encoded := encodeBlock(w.pending)
+	var encoded []byte
+	if w.opts.ColumnOriented {
+		encoded = encodeColBlock(w.pending)
+	} else {
+		encoded = encodeBlock(w.pending)
+	}
 	if w.opts.CompressionType != CompressionNone {
 		compressed, cerr := compress(w.opts.CompressionType, encoded)
 		if cerr != nil {
