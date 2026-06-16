@@ -255,17 +255,13 @@ func TestScanBlockAllocsZero(t *testing.T) {
 
 	allocs := testing.AllocsPerRun(20, func() {
 		it, err2 := r.Scan(0, int64(201*1000), nil)
-		if err2 != nil {
-			t.Fatal(err2)
-		}
+		require.NoError(t, err2)
 		for it.Next() {
 			_ = it.View()
 		}
 		_ = it.Close()
 	})
-	if allocs > 5 {
-		t.Errorf("expected ≤ 5 allocs for 200-record scan, got %.0f", allocs)
-	}
+	assert.LessOrEqual(t, allocs, float64(5), "expected ≤ 5 allocs for 200-record scan, got %.1f", allocs)
 }
 
 func TestConcurrentScanSameFile(t *testing.T) {
@@ -290,11 +286,9 @@ func TestConcurrentScanSameFile(t *testing.T) {
 	results := make([][]record.Record, 2)
 	var wg sync.WaitGroup
 	for i, r := range []*Reader{r1, r2} {
-		wg.Add(1)
-		go func(idx int, rd *Reader) {
-			defer wg.Done()
-			results[idx] = collectScan(t, rd, 0, int64(101*1000), nil)
-		}(i, r)
+		wg.Go(func() {
+			results[i] = collectScan(t, r, 0, int64(101*1000), nil)
+		})
 	}
 	wg.Wait()
 

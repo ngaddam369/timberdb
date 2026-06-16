@@ -53,15 +53,20 @@ func compress(ct CompressionType, src []byte) ([]byte, error) {
 }
 
 // decompress reverses the compression applied by compress.
-// CompressionNone returns src unchanged (no copy).
-func decompress(ct CompressionType, src []byte) ([]byte, error) {
+// CompressionNone returns src unchanged (no copy); dst is ignored.
+// For other types, dst is used as a hint buffer — if its capacity is sufficient
+// the decompressed bytes are written into dst's backing array, avoiding an allocation.
+// Pass nil to always allocate a fresh buffer.
+func decompress(ct CompressionType, src, dst []byte) ([]byte, error) {
 	switch ct {
 	case CompressionNone:
 		return src, nil
 	case CompressionZstd:
-		return zstdDec.DecodeAll(src, nil)
+		// DecodeAll appends to dst; passing dst[:0] reuses the backing array when cap is sufficient.
+		return zstdDec.DecodeAll(src, dst[:0])
 	case CompressionSnappy:
-		return snappy.Decode(nil, src)
+		// Decode reuses dst when len(dst) >= decodedLen; otherwise it allocates.
+		return snappy.Decode(dst, src)
 	default:
 		return nil, fmt.Errorf("sstable: unknown compression type %d", ct)
 	}

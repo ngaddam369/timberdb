@@ -121,6 +121,38 @@ func TestReaderMixedV0V1Scan(t *testing.T) {
 	assert.Equal(t, int64(50_000), got1[0].Timestamp)
 }
 
+// TestScanDecompAllocCount verifies that scanning a compressed SSTable reuses
+// the decompression buffer across block boundaries instead of allocating once per block.
+// 200 records at BlockSizeBytes=512 produces ~100 blocks; without reuse allocs/op ≈ 102,
+// with reuse allocs/op ≈ 2.
+func TestScanDecompAllocCount(t *testing.T) {
+	dir := t.TempDir()
+	recs := compressRecords(200)
+	path := buildSSTable(t, dir, "alloc.sst",
+		WriterOptions{CompressionType: CompressionZstd, BlockSizeBytes: 512},
+		recs)
+
+	r, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	// Warm-up: pre-size any internal state before counting.
+	_ = collectAllRecords(t, r)
+
+	allocs := testing.AllocsPerRun(10, func() {
+		it, err := r.Scan(math.MinInt64, math.MaxInt64, nil)
+		require.NoError(t, err)
+		for it.Next() {
+			_ = it.View()
+		}
+		_ = it.Close()
+	})
+	// Without buffer reuse: ~1 alloc per block (≈102 for 100 blocks).
+	// With buffer reuse: ≤ 5 without -race; ≤ 20 with -race (race detector shadow allocs).
+	assert.LessOrEqual(t, allocs, float64(20),
+		"want ≤ 20 allocs/scan (buffer reuse), got %.1f", allocs)
+}
+
 func TestReaderConcurrentCompressed(t *testing.T) {
 	dir := t.TempDir()
 	recs := compressRecords(200)
@@ -138,9 +170,7 @@ func TestReaderConcurrentCompressed(t *testing.T) {
 	counts := make([]int, goroutines)
 
 	for i := range goroutines {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+		wg.Go(func() {
 			it, err := r.Scan(math.MinInt64, math.MaxInt64, nil)
 			if err != nil {
 				errs[i] = err
@@ -153,7 +183,7 @@ func TestReaderConcurrentCompressed(t *testing.T) {
 				errs[i] = err
 			}
 			_ = it.Close()
-		}(i)
+		})
 	}
 	wg.Wait()
 

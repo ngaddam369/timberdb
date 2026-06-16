@@ -106,9 +106,7 @@ func TestEngine(t *testing.T) {
 		)
 		var wg sync.WaitGroup
 		for g := range goroutines {
-			wg.Add(1)
-			go func(g int) {
-				defer wg.Done()
+			wg.Go(func() {
 				for i := range perG {
 					ts := base.Add(time.Duration(g*perG+i) * time.Millisecond).UnixNano()
 					assert.NoError(t, e.Append(record.Record{
@@ -117,7 +115,7 @@ func TestEngine(t *testing.T) {
 						Payload:   []byte("p"),
 					}))
 				}
-			}(g)
+			})
 		}
 		wg.Wait()
 
@@ -174,9 +172,7 @@ func TestMergeIteratorZeroAllocsPerRecord(t *testing.T) {
 		}
 		_ = m.Close()
 	})
-	if allocs > 10 {
-		t.Errorf("expected ≤ 10 total allocs for %d-record merge, got %.0f", N, allocs)
-	}
+	assert.LessOrEqual(t, allocs, float64(10), "expected ≤ 10 total allocs for %d-record merge, got %.1f", N, allocs)
 }
 
 func TestMergeIteratorView(t *testing.T) {
@@ -196,7 +192,7 @@ func TestMergeIteratorView(t *testing.T) {
 	iter1 := newStaticIter(recs1)
 	iter2 := newStaticIter(recs2)
 	m := newMergeIterator([]record.Iterator{iter1, iter2})
-	defer func() { require.NoError(t, m.Close()) }()
+	t.Cleanup(func() { require.NoError(t, m.Close()) })
 
 	var i int
 	for m.Next() {

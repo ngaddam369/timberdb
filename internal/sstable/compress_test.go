@@ -21,7 +21,7 @@ func TestCompressZstdRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Less(t, len(compressed), len(compressFixture), "zstd must reduce size for compressible data")
 
-	got, err := decompress(CompressionZstd, compressed)
+	got, err := decompress(CompressionZstd, compressed, nil)
 	require.NoError(t, err)
 	assert.Equal(t, compressFixture, got)
 }
@@ -31,13 +31,13 @@ func TestCompressSnappyRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Less(t, len(compressed), len(compressFixture), "snappy must reduce size for compressible data")
 
-	got, err := decompress(CompressionSnappy, compressed)
+	got, err := decompress(CompressionSnappy, compressed, nil)
 	require.NoError(t, err)
 	assert.Equal(t, compressFixture, got)
 }
 
 func TestDecompressNoneIsIdentity(t *testing.T) {
-	got, err := decompress(CompressionNone, compressFixture)
+	got, err := decompress(CompressionNone, compressFixture, nil)
 	require.NoError(t, err)
 	assert.Equal(t, compressFixture, got)
 }

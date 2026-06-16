@@ -148,7 +148,7 @@ func (r *Reader) Scan(start, end int64, sourceID []byte) (record.Iterator, error
 		startBlock--
 	}
 
-	blockData, blockRem, err := r.readBlockRaw(startBlock)
+	blockData, blockRem, err := r.readBlockRaw(startBlock, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +160,8 @@ func (r *Reader) Scan(start, end int64, sourceID []byte) (record.Iterator, error
 		sourceID:  sourceID,
 		blockIdx:  startBlock,
 		blockData: blockData,
-		blockOff:  4, // skip 4-byte RecordCount header
+		decompBuf: blockData, // seed reuse buffer; nil for uncompressed (harmless)
+		blockOff:  4,         // skip 4-byte RecordCount header
 		blockRem:  blockRem,
 	}, nil
 }
@@ -178,7 +179,9 @@ func (r *Reader) Close() error {
 
 // readBlockRaw reads and CRC-validates the block at idx. Returns the validated payload
 // (sans CRC), the record count from the header, and any error.
-func (r *Reader) readBlockRaw(idx int) (payload []byte, count int, err error) {
+// decompBuf is an optional hint buffer for compressed files: when its capacity is sufficient
+// to hold the decompressed block the backing array is reused, avoiding an allocation.
+func (r *Reader) readBlockRaw(idx int, decompBuf []byte) (payload []byte, count int, err error) {
 	e := r.timeIndex[idx]
 	var buf []byte
 	if r.mmap != nil {
@@ -191,7 +194,7 @@ func (r *Reader) readBlockRaw(idx int) (payload []byte, count int, err error) {
 		buf = b
 	}
 	if r.compressionType != CompressionNone {
-		decompressed, derr := decompress(r.compressionType, buf)
+		decompressed, derr := decompress(r.compressionType, buf, decompBuf)
 		if derr != nil {
 			return nil, 0, ErrBlockCorrupt
 		}
@@ -263,8 +266,10 @@ func loadSrcIndex(f *os.File, meta SSTableMeta) (map[string]srcEntry, error) {
 
 // scanIterator iterates over records in a time-range and optional source filter.
 // blockData holds the validated block payload (sans CRC); SourceID and Payload in
-// current are zero-copy slices into blockData, kept alive by the GC as long as
-// any RecordView derived from them exists.
+// current are zero-copy slices into blockData.
+// For compressed files, decompBuf is reused across block boundaries: each new block
+// decompresses into decompBuf's backing array when capacity is sufficient, replacing
+// the previous block's data. RecordViews are valid only until the next call to Next.
 type scanIterator struct {
 	r        *Reader
 	start    int64
@@ -273,6 +278,7 @@ type scanIterator struct {
 
 	blockIdx  int
 	blockData []byte // validated block payload (record count header + records)
+	decompBuf []byte // reuse hint for decompress; nil for uncompressed files
 	blockOff  int    // parse cursor (starts at 4, after the 4-byte count header)
 	blockRem  int    // records left to parse in blockData
 	current   record.RecordView
@@ -311,12 +317,13 @@ func (it *scanIterator) Next() bool {
 			return false
 		}
 
-		payload, count, err := it.r.readBlockRaw(it.blockIdx)
+		payload, count, err := it.r.readBlockRaw(it.blockIdx, it.decompBuf)
 		if err != nil {
 			it.err = err
 			return false
 		}
 		it.blockData = payload
+		it.decompBuf = payload // update for next block
 		it.blockOff = 4
 		it.blockRem = count
 	}

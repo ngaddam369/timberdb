@@ -57,7 +57,8 @@ func Merge(
 	h.init()
 	for _, it := range iters {
 		if it.Next() {
-			h.push(mergeItem{view: it.View(), iter: it})
+			v := it.View()
+			h.push(mergeItem{ts: v.Timestamp, sourceID: v.SourceID, iter: it})
 		} else {
 			if err := it.Err(); err != nil {
 				drainAndCloseIters(iters)
@@ -86,7 +87,7 @@ func Merge(
 
 	for len(*h) > 0 {
 		item := h.pop()
-		if err := w.Add(item.view.Clone()); err != nil {
+		if err := w.Add(item.iter.View().Clone()); err != nil {
 			if cerr := item.iter.Close(); cerr != nil {
 				slog.Error("compaction: close iter on Add error", "err", cerr)
 			}
@@ -94,7 +95,8 @@ func Merge(
 			return nil, err
 		}
 		if item.iter.Next() {
-			h.push(mergeItem{view: item.iter.View(), iter: item.iter})
+			v := item.iter.View()
+			h.push(mergeItem{ts: v.Timestamp, sourceID: v.SourceID, iter: item.iter})
 		} else {
 			if err := item.iter.Err(); err != nil {
 				if cerr := item.iter.Close(); cerr != nil {
@@ -151,20 +153,22 @@ func Merge(
 }
 
 // mergeItem is one slot in the k-way merge heap.
+// Only ts and sourceID are stored for ordering; the full view is read via iter.View()
+// after pop, before the iterator is advanced — keeping the heap free of byte-slice aliases.
 type mergeItem struct {
-	view record.RecordView
-	iter record.Iterator
+	ts       int64
+	sourceID []byte
+	iter     record.Iterator
 }
 
 // mergeHeap is a min-heap of mergeItems ordered by (Timestamp, SourceID).
 type mergeHeap []mergeItem
 
 func (h mergeHeap) Less(i, j int) bool {
-	a, b := h[i].view, h[j].view
-	if a.Timestamp != b.Timestamp {
-		return a.Timestamp < b.Timestamp
+	if h[i].ts != h[j].ts {
+		return h[i].ts < h[j].ts
 	}
-	return bytes.Compare(a.SourceID, b.SourceID) < 0
+	return bytes.Compare(h[i].sourceID, h[j].sourceID) < 0
 }
 
 func (h *mergeHeap) push(item mergeItem) {

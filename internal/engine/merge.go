@@ -6,18 +6,25 @@ import (
 	"github.com/ngaddam369/timberdb/internal/record"
 )
 
+// heapItem holds the timestamp and sourceID of the record currently at the head of
+// iters[index], along with the iterator index. Only ts and sourceID are stored (not a
+// full RecordView) so that the heap never holds byte slices into a scanIterator's
+// decompression buffer across a block boundary.
+// sourceID is a zero-copy slice that remains valid while the item sits in the heap,
+// because the iterator is only advanced after the item is popped.
 type heapItem struct {
-	view  record.RecordView
-	index int
+	ts       int64
+	sourceID []byte
+	index    int
 }
 
 type minHeap []heapItem
 
 func (h minHeap) Less(i, j int) bool {
-	if h[i].view.Timestamp != h[j].view.Timestamp {
-		return h[i].view.Timestamp < h[j].view.Timestamp
+	if h[i].ts != h[j].ts {
+		return h[i].ts < h[j].ts
 	}
-	return bytes.Compare(h[i].view.SourceID, h[j].view.SourceID) < 0
+	return bytes.Compare(h[i].sourceID, h[j].sourceID) < 0
 }
 
 func (h *minHeap) push(item heapItem) {
@@ -71,20 +78,25 @@ func (h *minHeap) down(i0, n int) {
 	}
 }
 
+// mergeIterator merges N sorted record.Iterators into a single sorted stream.
+// curIdx is the index of the iterator holding the current record (-1 before first Next).
+// View() delegates to iters[curIdx].View() so no RecordView byte slices are held
+// across iterator advances, making scanIterator decompression-buffer reuse safe.
 type mergeIterator struct {
 	iters  []record.Iterator
 	h      minHeap
-	cur    record.RecordView
+	curIdx int
 	err    error
 	closed bool
 }
 
 func newMergeIterator(iters []record.Iterator) *mergeIterator {
-	m := &mergeIterator{iters: iters}
+	m := &mergeIterator{iters: iters, curIdx: -1}
 	m.h.init()
 	for i, it := range iters {
 		if it.Next() {
-			m.h.push(heapItem{view: it.View(), index: i})
+			v := it.View()
+			m.h.push(heapItem{ts: v.Timestamp, sourceID: v.SourceID, index: i})
 		} else if err := it.Err(); err != nil && m.err == nil {
 			m.err = err
 		}
@@ -93,23 +105,41 @@ func newMergeIterator(iters []record.Iterator) *mergeIterator {
 }
 
 func (m *mergeIterator) Next() bool {
-	if m.err != nil || len(m.h) == 0 {
+	if m.err != nil {
 		return false
 	}
-	item := m.h.pop()
-	m.cur = item.view
-	it := m.iters[item.index]
-	if it.Next() {
-		m.h.push(heapItem{view: it.View(), index: item.index})
-	} else if err := it.Err(); err != nil && m.err == nil {
-		m.err = err
+	// Advance the previously-current iterator and enqueue its next record.
+	if m.curIdx >= 0 {
+		it := m.iters[m.curIdx]
+		if it.Next() {
+			v := it.View()
+			m.h.push(heapItem{ts: v.Timestamp, sourceID: v.SourceID, index: m.curIdx})
+		} else if err := it.Err(); err != nil && m.err == nil {
+			m.err = err
+		}
 	}
+	if len(m.h) == 0 {
+		return false
+	}
+	m.curIdx = m.h.pop().index
 	return true
 }
 
-func (m *mergeIterator) Record() record.Record   { return m.cur.Clone() }
-func (m *mergeIterator) View() record.RecordView { return m.cur }
-func (m *mergeIterator) Err() error              { return m.err }
+func (m *mergeIterator) Record() record.Record {
+	if m.curIdx < 0 {
+		return record.Record{}
+	}
+	return m.iters[m.curIdx].View().Clone()
+}
+
+func (m *mergeIterator) View() record.RecordView {
+	if m.curIdx < 0 {
+		return record.RecordView{}
+	}
+	return m.iters[m.curIdx].View()
+}
+
+func (m *mergeIterator) Err() error { return m.err }
 
 func (m *mergeIterator) Close() error {
 	if m.closed {
