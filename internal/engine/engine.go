@@ -25,6 +25,13 @@ import (
 // ErrClosed is returned by Append and Scan after Close has been called.
 var ErrClosed = errors.New("timberdb: engine is closed")
 
+// ScanOptions configures a call to Scan. Passing nil is equivalent to zero-value options
+// (no source filter). This type is extended by future fields without breaking callers.
+type ScanOptions struct {
+	// SourceID restricts results to records from this source. Nil means all sources.
+	SourceID []byte
+}
+
 // Engine wires WAL, partition router, SSTable files, and manifest into a single
 // durable append+scan store. All exported methods are safe for concurrent use.
 type Engine struct {
@@ -256,14 +263,18 @@ func (e *Engine) Append(rec record.Record) error {
 	return nil
 }
 
-// Scan returns a merged iterator over all records with timestamps in [start, end),
-// optionally filtered to a single sourceID (nil = all sources).
-// The returned iterator must be closed by the caller.
-func (e *Engine) Scan(start, end time.Time, sourceID []byte) (record.Iterator, error) {
+// Scan returns a merged iterator over all records with timestamps in [start, end).
+// Pass nil opts for no source filter. The returned iterator must be closed by the caller.
+func (e *Engine) Scan(start, end time.Time, opts *ScanOptions) (record.Iterator, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	if e.closed {
 		return nil, ErrClosed
+	}
+
+	var sourceID []byte
+	if opts != nil {
+		sourceID = opts.SourceID
 	}
 
 	startNs := start.UnixNano()
@@ -385,6 +396,7 @@ func (e *Engine) flushPartition(p *partition.TimePartition) error {
 		PartitionStart:  p.Window.Start,
 		PartitionEnd:    p.Window.End,
 		CompressionType: e.opts.CompressionType,
+		ColumnOriented:  e.opts.ColumnOriented,
 	}
 	w, err := sstable.NewWriter(sstPath, wopts)
 	if err != nil {
@@ -551,6 +563,7 @@ func (e *Engine) maybeCompact(win partition.PartitionWindow) {
 		PartitionStart:  win.Start,
 		PartitionEnd:    win.End,
 		CompressionType: e.opts.CompressionType,
+		ColumnOriented:  e.opts.ColumnOriented,
 	}
 
 	// Stat input files before Merge deletes them from disk.

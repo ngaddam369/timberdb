@@ -45,6 +45,11 @@ type Options struct {
 	// and produces v0 files compatible with all reader versions. A non-None value
 	// produces v1 files with a 16-byte header that readers auto-detect.
 	CompressionType sstable.CompressionType
+	// ColumnOriented writes column-oriented (version-2) SSTables on flush and compaction.
+	// When true, timestamps, sourceIDs, and payloads are stored in separate sections per
+	// block, enabling payload-free count and rate aggregations via Engine.Aggregate.
+	// Existing v0/v1 files on disk are read with the row path automatically.
+	ColumnOriented bool
 }
 
 // DefaultOptions returns a production-ready Options with conservative defaults.

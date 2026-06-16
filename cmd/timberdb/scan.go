@@ -42,12 +42,12 @@ func newScanCmd() *cobra.Command {
 				}
 			}()
 
-			var srcID []byte
+			var opts *engine.ScanOptions
 			if source != "" {
-				srcID = []byte(source)
+				opts = &engine.ScanOptions{SourceID: []byte(source)}
 			}
 
-			it, err := e.Scan(start, end, srcID)
+			it, err := e.Scan(start, end, opts)
 			if err != nil {
 				return err
 			}
