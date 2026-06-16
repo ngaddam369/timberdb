@@ -98,3 +98,78 @@ func TestBlockZeroLengthFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, input, got)
 }
+
+func TestColBlockRoundTrip(t *testing.T) {
+	encoded := encodeColBlock(blockFixture)
+	got, err := decodeColBlock(encoded)
+	require.NoError(t, err)
+	assert.Equal(t, blockFixture, got)
+}
+
+func TestColBlockEmptyRoundTrip(t *testing.T) {
+	encoded := encodeColBlock(nil)
+	got, err := decodeColBlock(encoded)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestColBlockTimestampsOnly(t *testing.T) {
+	records := []record.Record{
+		{Timestamp: 100, SourceID: []byte("sensor-a"), Payload: make([]byte, 512)},
+		{Timestamp: 200, SourceID: []byte("sensor-b"), Payload: make([]byte, 512)},
+		{Timestamp: 300, SourceID: []byte("sensor-c"), Payload: make([]byte, 512)},
+	}
+	encoded := encodeColBlock(records)
+
+	got, err := decodeColBlockTimestamps(encoded)
+	require.NoError(t, err)
+	require.Len(t, got, len(records))
+	for i, r := range records {
+		assert.Equal(t, r.Timestamp, got[i])
+	}
+}
+
+func TestColBlockCRCMismatch(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func() []byte
+	}{
+		{
+			"flip payload byte",
+			func() []byte {
+				b := encodeColBlock(blockFixture)
+				b[len(b)-5] ^= 0xFF
+				return b
+			},
+		},
+		{
+			"flip first byte",
+			func() []byte {
+				b := encodeColBlock(blockFixture)
+				b[0] ^= 0x01
+				return b
+			},
+		},
+		{
+			"truncate one byte",
+			func() []byte {
+				b := encodeColBlock(blockFixture)
+				return b[:len(b)-1]
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := decodeColBlock(tc.setup())
+			assert.ErrorIs(t, err, ErrBlockCorrupt)
+		})
+	}
+}
+
+func TestColBlockTimestampsCRCMismatch(t *testing.T) {
+	encoded := encodeColBlock(blockFixture)
+	encoded[5] ^= 0xFF
+	_, err := decodeColBlockTimestamps(encoded)
+	assert.ErrorIs(t, err, ErrBlockCorrupt)
+}
