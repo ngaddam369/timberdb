@@ -116,6 +116,30 @@ func Open(dir string, opts Options) (*Engine, error) {
 		return nil, err
 	}
 
+	// Remove SST files present on disk but absent from the manifest (orphans produced
+	// by a crash between SSTable write and manifest fsync).
+	liveSSTs := make(map[string]struct{})
+	for _, readers := range e.files {
+		for _, r := range readers {
+			liveSSTs[r.Meta().Path] = struct{}{}
+		}
+	}
+	sstPaths, err := filepath.Glob(filepath.Join(dir, "*.sst"))
+	if err != nil {
+		if cerr := m.Close(); cerr != nil {
+			slog.Error("engine: manifest close on SST glob error", "err", cerr)
+		}
+		return nil, err
+	}
+	for _, p := range sstPaths {
+		if _, ok := liveSSTs[p]; !ok {
+			slog.Warn("engine: removing orphaned SSTable", "path", p)
+			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+				slog.Error("engine: failed to remove orphaned SSTable", "path", p, "err", err)
+			}
+		}
+	}
+
 	// Discover and replay all WAL segments in sorted name order.
 	walPaths, err := filepath.Glob(filepath.Join(dir, "wal-*.wal"))
 	if err != nil {
@@ -135,6 +159,8 @@ func Open(dir string, opts Options) (*Engine, error) {
 	}
 
 	// Replay WAL segments; skip records already covered by a flushed SSTable.
+	// A WAL that contributes no new records is fully covered and deleted (orphan
+	// produced by a crash after manifest fsync but before os.Remove of the old WAL).
 	for _, walPath := range walPaths {
 		w, werr := wal.Open(walPath, opts.WALSyncMode)
 		if werr != nil {
@@ -143,11 +169,13 @@ func Open(dir string, opts Options) (*Engine, error) {
 			}
 			return nil, werr
 		}
+		hadNewRecord := false
 		replayErr := w.Replay(func(rec record.Record) {
 			win := e.router.WindowFor(rec.Timestamp)
 			if maxTS, ok := e.maxFlushedTS[win]; ok && rec.Timestamp <= maxTS {
 				return // already persisted in an SSTable
 			}
+			hadNewRecord = true
 			p, rerr := e.router.Route(rec.Timestamp)
 			if rerr != nil {
 				slog.Error("engine: WAL replay route failed", "ts", rec.Timestamp, "err", rerr)
@@ -165,6 +193,12 @@ func Open(dir string, opts Options) (*Engine, error) {
 				slog.Error("engine: manifest close on WAL replay error", "err", cerr)
 			}
 			return nil, replayErr
+		}
+		if !hadNewRecord {
+			slog.Warn("engine: removing covered WAL segment", "path", walPath)
+			if err := os.Remove(walPath); err != nil && !os.IsNotExist(err) {
+				slog.Error("engine: failed to remove covered WAL segment", "path", walPath, "err", err)
+			}
 		}
 	}
 
