@@ -160,7 +160,7 @@ func (r *Reader) Scan(start, end int64, sourceID []byte) (record.Iterator, error
 	}
 
 	if r.columnar {
-		recs, err := r.readColBlock(startBlock)
+		recs, decompBuf, err := r.readColBlock(startBlock, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -171,6 +171,7 @@ func (r *Reader) Scan(start, end int64, sourceID []byte) (record.Iterator, error
 			sourceID:  sourceID,
 			blockIdx:  startBlock,
 			blockRecs: recs,
+			decompBuf: decompBuf,
 		}, nil
 	}
 
@@ -379,7 +380,10 @@ func (emptyIter) Err() error              { return nil }
 
 // readColBlock reads the columnar block at idx, decompresses if needed, and decodes
 // it into a slice of records. Unlike readBlockRaw it returns owned copies of all fields.
-func (r *Reader) readColBlock(idx int) ([]record.Record, error) {
+// decompBuf is an optional hint buffer for compressed files: when its capacity is
+// sufficient to hold the decompressed block the backing array is reused, avoiding an
+// allocation. The caller should store the second return value and pass it on the next call.
+func (r *Reader) readColBlock(idx int, decompBuf []byte) ([]record.Record, []byte, error) {
 	e := r.timeIndex[idx]
 	var buf []byte
 	if r.mmap != nil {
@@ -387,18 +391,20 @@ func (r *Reader) readColBlock(idx int) ([]record.Record, error) {
 	} else {
 		b := make([]byte, e.size)
 		if _, err := r.f.ReadAt(b, int64(e.offset)); err != nil {
-			return nil, err
+			return nil, decompBuf, err
 		}
 		buf = b
 	}
 	if r.compressionType != CompressionNone {
-		decompressed, derr := decompress(r.compressionType, buf, nil)
+		decompressed, derr := decompress(r.compressionType, buf, decompBuf)
 		if derr != nil {
-			return nil, ErrBlockCorrupt
+			return nil, decompBuf, ErrBlockCorrupt
 		}
 		buf = decompressed
+		decompBuf = decompressed
 	}
-	return decodeColBlock(buf)
+	recs, err := decodeColBlock(buf)
+	return recs, decompBuf, err
 }
 
 // ScanTimestamps returns the timestamps of all records in the block at idx that
@@ -447,6 +453,8 @@ func (r *Reader) TimeIndexEntry(i int) (minTimestamp int64) {
 // colScanIterator iterates over records in a columnar (version-2) SSTable.
 // It decodes one block at a time, keeping decoded records in memory until the block
 // is exhausted, then loads the next matching block.
+// For compressed files, decompBuf is reused across block boundaries to avoid a
+// per-block decompression allocation (mirrors the row-path scanIterator behaviour).
 type colScanIterator struct {
 	r        *Reader
 	start    int64
@@ -456,6 +464,7 @@ type colScanIterator struct {
 	blockIdx  int
 	blockRecs []record.Record
 	recIdx    int
+	decompBuf []byte // reuse hint for decompress; nil for uncompressed files
 	current   record.RecordView
 	err       error
 }
@@ -486,12 +495,13 @@ func (it *colScanIterator) Next() bool {
 		if it.r.timeIndex[it.blockIdx].minTimestamp >= it.end {
 			return false
 		}
-		recs, err := it.r.readColBlock(it.blockIdx)
+		recs, buf, err := it.r.readColBlock(it.blockIdx, it.decompBuf)
 		if err != nil {
 			it.err = err
 			return false
 		}
 		it.blockRecs = recs
+		it.decompBuf = buf
 		it.recIdx = 0
 	}
 }

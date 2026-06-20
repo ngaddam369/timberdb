@@ -43,7 +43,7 @@ flowchart LR
 
 ## Benchmarks
 
-512-byte payload, sequential timestamps, single source. Intel Core i5-1334U, Go 1.26.
+512-byte payload, sequential timestamps, single source. Intel Core i5-1334U, Go 1.26.4.
 All engines use synchronous writes (`fsync` after every record) for a fair durability comparison.
 TimberDB uses `CompressionZstd`; Badger and Pebble use their default snappy compression.
 Medians across 5 benchmark runs.
@@ -52,25 +52,25 @@ Medians across 5 benchmark runs.
 
 | Engine | ns/op | MB/s | B/op | allocs/op | Disk SA† |
 |---|---|---|---|---|---|
-| **TimberDB** | **2 776** | **184.45** | **3 249** | **4** | **0.011×** |
-| Pebble | 5 350 | 95.70 | 32 | 0 | 0.21×‡ |
-| Badger | 15 294 | 33.48 | 1 478 | 39 | 0.12×‡ |
-| Bbolt | 27 463 | 18.64 | 28 840 | 105 | 3.18× |
+| **TimberDB** | **1 267** | **404** | **3 085** | **3** | **0.011×** |
+| Pebble | 2 570 | 199 | 32 | 0 | 0.148×‡ |
+| Badger | 8 550 | 60 | 4 143 | 40 | 0.116×‡ |
+| Bbolt | 16 389 | 31 | 30 301 | 111 | 2.78× |
 
 ```mermaid
 xychart-beta
     title "Append latency in ns per op"
     x-axis [TimberDB, Pebble, Badger, bbolt]
-    bar [2776, 5350, 15294, 27463]
+    bar [1267, 2570, 8550, 16389]
 ```
 
 **Scan** (1 000 records, 512 KB per iteration)
 
 | Engine | ns/op | MB/s | B/op | allocs/op |
 |---|---|---|---|---|
-| Pebble | 62 939 | 8 135 | 16 | 1 |
-| **TimberDB** | **317 020** | **1 615** | **41 536** | **9** |
-| Badger | 1 019 606 | 502 | 101 076 | 1 332 |
+| Pebble | 36 470 | 14 039 | 16 | 1 |
+| **TimberDB** | **165 579** | **3 092** | **41 534** | **9** |
+| Badger | 495 048 | 1 034 | 97 533 | 1 331 |
 
 bbolt is excluded from the scan comparison — it only supports full-bucket iteration, not efficient time-range scans.
 
@@ -78,7 +78,7 @@ bbolt is excluded from the scan comparison — it only supports full-bucket iter
 xychart-beta
     title "Scan 1000 records latency in ns per op"
     x-axis [Pebble, TimberDB, Badger]
-    bar [62939, 317020, 1019606]
+    bar [36470, 165579, 495048]
 ```
 
 **Reading the numbers**
@@ -95,18 +95,19 @@ With incompressible data expect SA ≈ 1.04× for TimberDB (uncompressed), ≈ 1
 
 **Where timberdb wins**
 
-Append throughput: timberdb writes at **1.9× the speed of Pebble**, **5.5× Badger**, and **9.9× Bbolt** with full `fsync` durability and zstd compression enabled.
+Append throughput: timberdb writes at **2.0× the speed of Pebble**, **6.8× Badger**, and **12.9× Bbolt** with full `fsync` durability and zstd compression enabled.
 The WAL fsync is the bottleneck; timberdb's partition-local sequential writes require exactly one fsync per record with no cross-level compaction amplification, and the zstd compression step runs only at memtable flush time — not on the hot write path — so it adds no latency to individual appends.
+The WAL encode path reuses a single pre-allocated buffer per WAL instance (grown on first use, held for the engine lifetime), eliminating one heap allocation per write and reducing GC pressure to 3 allocs/op.
 
-Storage efficiency: with `CompressionZstd`, timberdb stores this benchmark's compressible payload at **0.011× SA** — better than Badger (0.12×) or Pebble (0.21×), because zstd outcompresses snappy on uniform data.
+Storage efficiency: with `CompressionZstd`, timberdb stores this benchmark's compressible payload at **0.011× SA** — better than Badger (0.116×) or Pebble (0.148×), because zstd outcompresses snappy on uniform data.
 With random, incompressible bytes, SA rises to ≈ 1.04×; WAL files are still removed after each memtable flush, so there is no multi-generational write amplification.
 
-Scan over a bounded time range is **3.2× faster than Badger** (317 µs vs 1 020 µs), with 9 allocs/op and 41 KB/op.
+Scan over a bounded time range is **3.0× faster than Badger** (166 µs vs 495 µs), with 9 allocs/op and 41 KB/op.
 The scan path reuses a single decompression buffer across all block boundaries — 17 blocks covering 1 000 records produce only 9 total allocations — so GC pressure is comparable to uncompressed operation.
 
 **Where timberdb trades off**
 
-Pebble scan is **5.0× faster** (63 µs vs 317 µs) on this benchmark.
+Pebble scan is **4.5× faster** (37 µs vs 166 µs) on this benchmark.
 Two structural advantages drive this gap: Pebble's compressed scan reads only ~60 KB of compressed bytes from disk per 1 000 records, and its internal block cache amortises decompression across repeated scans so that most reads never pay the decompress cost at all.
 TimberDB scans still decompress each block on every pass (no block cache), but the decompression buffer is reused across blocks, cutting B/op from 660 KB to 41 KB and allocs/op from 25 to 9.
 Point-key lookups are not a supported operation — timberdb is a range-scan store by design.

@@ -120,6 +120,36 @@ func TestReaderScanNoOverlap(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+func TestReaderScanRangeMiss(t *testing.T) {
+	// Records span [1000, 5000].
+	recs := []record.Record{
+		{Timestamp: 1000, SourceID: []byte("s"), Payload: []byte("a")},
+		{Timestamp: 2000, SourceID: []byte("s"), Payload: []byte("b")},
+		{Timestamp: 5000, SourceID: []byte("s"), Payload: []byte("c")},
+	}
+	path, _ := writeSSTable(t, DefaultWriterOptions(), recs)
+
+	r, err := NewReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	cases := []struct {
+		name  string
+		start int64
+		end   int64
+	}{
+		{"range entirely after last record", 6000, 9000},
+		{"range entirely before first record", 0, 500},
+		{"range in gap between records", 3000, 4000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := collectScan(t, r, tc.start, tc.end, nil)
+			assert.Empty(t, got, "expected no records for range [%d, %d)", tc.start, tc.end)
+		})
+	}
+}
+
 func TestReaderScanSourceFilter(t *testing.T) {
 	recs := []record.Record{
 		{Timestamp: 1000, SourceID: []byte("alpha"), Payload: []byte("1")},

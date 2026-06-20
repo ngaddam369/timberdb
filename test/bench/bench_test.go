@@ -14,6 +14,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -175,11 +176,12 @@ func BenchmarkTimberDBConcurrentAppend(b *testing.B) {
 	}
 
 	src := []byte("bench-concurrent")
+	tsCounter := benchBase.UnixNano()
 	b.SetBytes(benchPayloadSize)
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		ts := benchBase.UnixNano()
 		for pb.Next() {
+			ts := atomic.AddInt64(&tsCounter, 1)
 			if err := e.Append(record.Record{
 				Timestamp: ts,
 				SourceID:  src,
@@ -187,7 +189,6 @@ func BenchmarkTimberDBConcurrentAppend(b *testing.B) {
 			}); err != nil {
 				b.Fatal(err)
 			}
-			ts++
 		}
 	})
 	b.StopTimer()

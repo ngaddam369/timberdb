@@ -114,6 +114,19 @@ func TestWriterOutOfOrder(t *testing.T) {
 	}
 }
 
+func TestWriterDuplicateRecord(t *testing.T) {
+	// Two records with identical (Timestamp, SourceID) are not out-of-order —
+	// the writer uses a strict less-than check, so equal keys are accepted.
+	w, _ := makeWriter(t, DefaultWriterOptions())
+	r := record.Record{Timestamp: 1000, SourceID: []byte("s1"), Payload: []byte("a")}
+	require.NoError(t, w.Add(r))
+	r2 := record.Record{Timestamp: 1000, SourceID: []byte("s1"), Payload: []byte("b")}
+	require.NoError(t, w.Add(r2), "duplicate (ts, sourceID) must be accepted")
+	meta, err := w.Finish()
+	require.NoError(t, err)
+	assert.Equal(t, uint64(2), meta.RecordCount)
+}
+
 func TestWriterFooterBytes(t *testing.T) {
 	opts := WriterOptions{BlockSizeBytes: defaultBlockSize, PartitionStart: 100, PartitionEnd: 200}
 	w, path := makeWriter(t, opts)

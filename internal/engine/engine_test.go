@@ -148,6 +148,29 @@ func TestEngine(t *testing.T) {
 	})
 }
 
+func TestEngineClosed(t *testing.T) {
+	dir := t.TempDir()
+	e, err := Open(dir, DefaultOptions())
+	require.NoError(t, err)
+	require.NoError(t, e.Close())
+
+	t.Run("append_after_close", func(t *testing.T) {
+		err := e.Append(record.Record{
+			Timestamp: time.Now().UnixNano(),
+			SourceID:  []byte("s"),
+			Payload:   []byte("p"),
+		})
+		require.ErrorIs(t, err, ErrClosed)
+	})
+
+	t.Run("scan_after_close", func(t *testing.T) {
+		now := time.Now()
+		it, err := e.Scan(now, now.Add(time.Hour), nil)
+		require.ErrorIs(t, err, ErrClosed)
+		assert.Nil(t, it)
+	})
+}
+
 func TestMergeIteratorZeroAllocsPerRecord(t *testing.T) {
 	const N = 100
 	recs := make([]record.Record, N)

@@ -44,6 +44,7 @@ type WAL struct {
 	ticker   *time.Ticker
 	done     chan struct{}
 	wg       sync.WaitGroup
+	buf      []byte // reuse buffer for encoding; exclusively owned under mu
 }
 
 // Open opens or creates a WAL file at path with the given sync mode.
@@ -88,10 +89,10 @@ func (w *WAL) periodicSync() {
 // Append encodes r and appends it to the WAL. Behavior on disk flush is
 // determined by the WALSyncMode given to Open.
 func (w *WAL) Append(r record.Record) error {
-	buf := encodeRecord(r)
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if _, err := w.bw.Write(buf); err != nil {
+	w.buf = appendEncodeRecord(w.buf[:0], r)
+	if _, err := w.bw.Write(w.buf); err != nil {
 		return err
 	}
 	if w.syncMode == SyncAlways {
@@ -211,21 +212,26 @@ func (w *WAL) Close() error {
 	return w.file.Close()
 }
 
-// encodeRecord serialises r into:
-//
-//	CRC32(4B) | Len(4B) | Timestamp(8B) | SrcIDLen(4B) | SourceID | PayloadLen(4B) | Payload
-//
+// appendEncodeRecord serialises r into dst, growing it if necessary, and returns the result.
+// Wire format: CRC32(4B) | Len(4B) | Timestamp(8B) | SrcIDLen(4B) | SourceID | PayloadLen(4B) | Payload
 // CRC is computed over Len(4B) || body.
-func encodeRecord(r record.Record) []byte {
+// Callers pass dst[:0] to reuse an existing backing array without allocating.
+func appendEncodeRecord(dst []byte, r record.Record) []byte {
 	srcIDLen := len(r.SourceID)
 	payloadLen := len(r.Payload)
 	// body = Timestamp(8) + SrcIDLen(4) + SourceID + PayloadLen(4) + Payload
 	bodyLen := 8 + 4 + srcIDLen + 4 + payloadLen
-	buf := make([]byte, 8+bodyLen) // CRC32(4) + Len(4) + body
+	total := 8 + bodyLen // CRC32(4) + Len(4) + body
 
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(bodyLen))
+	if cap(dst) >= total {
+		dst = dst[:total]
+	} else {
+		dst = make([]byte, total)
+	}
 
-	body := buf[8:]
+	binary.LittleEndian.PutUint32(dst[4:8], uint32(bodyLen))
+
+	body := dst[8:]
 	binary.LittleEndian.PutUint64(body[0:8], uint64(r.Timestamp))
 	binary.LittleEndian.PutUint32(body[8:12], uint32(srcIDLen))
 	copy(body[12:12+srcIDLen], r.SourceID)
@@ -234,9 +240,9 @@ func encodeRecord(r record.Record) []byte {
 	copy(body[off+4:], r.Payload)
 
 	h := crc32.NewIEEE()
-	h.Write(buf[4:]) // Len + body
-	binary.LittleEndian.PutUint32(buf[0:4], h.Sum32())
-	return buf
+	h.Write(dst[4:]) // Len + body
+	binary.LittleEndian.PutUint32(dst[0:4], h.Sum32())
+	return dst
 }
 
 // decodeBody decodes a body slice (everything after the 8-byte header) into a Record.
