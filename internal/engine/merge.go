@@ -79,9 +79,8 @@ func (h *minHeap) down(i0, n int) {
 }
 
 // mergeIterator merges N sorted record.Iterators into a single sorted stream.
-// curIdx is the index of the iterator holding the current record (-1 before first Next).
-// View() delegates to iters[curIdx].View() so no RecordView byte slices are held
-// across iterator advances, making scanIterator decompression-buffer reuse safe.
+// View() delegates directly to iters[curIdx] so no RecordView slices are held
+// across Next calls, enabling decompBuf reuse in scanIterator.
 type mergeIterator struct {
 	iters  []record.Iterator
 	h      minHeap

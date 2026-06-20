@@ -48,7 +48,7 @@ func TestReaderMetaRoundTrip(t *testing.T) {
 	opts := WriterOptions{BlockSizeBytes: defaultBlockSize, PartitionStart: 50, PartitionEnd: 300}
 	path, written := writeSSTable(t, opts, recs)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Close() })
 
@@ -73,7 +73,7 @@ func TestReaderScanFullRange(t *testing.T) {
 	}
 	path, _ := writeSSTable(t, DefaultWriterOptions(), recs)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Close() })
 
@@ -92,7 +92,7 @@ func TestReaderScanSubRange(t *testing.T) {
 	}
 	path, _ := writeSSTable(t, DefaultWriterOptions(), recs)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Close() })
 
@@ -112,7 +112,7 @@ func TestReaderScanNoOverlap(t *testing.T) {
 	opts := WriterOptions{BlockSizeBytes: defaultBlockSize, PartitionStart: 16000, PartitionEnd: 17000}
 	path, _ := writeSSTable(t, opts, recs)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Close() })
 
@@ -129,7 +129,7 @@ func TestReaderScanRangeMiss(t *testing.T) {
 	}
 	path, _ := writeSSTable(t, DefaultWriterOptions(), recs)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Close() })
 
@@ -159,7 +159,7 @@ func TestReaderScanSourceFilter(t *testing.T) {
 	}
 	path, _ := writeSSTable(t, DefaultWriterOptions(), recs)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Close() })
 
@@ -199,7 +199,7 @@ func TestReaderScanMultiBlock(t *testing.T) {
 	path, meta := writeSSTable(t, opts, recs)
 	assert.Greater(t, meta.TimeIndexSize/timeIndexEntrySize, uint64(1))
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Close() })
 
@@ -219,7 +219,7 @@ func TestReaderScanSourceIndexSkip(t *testing.T) {
 	}
 	path, _ := writeSSTable(t, opts, recs)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Close() })
 
@@ -244,7 +244,7 @@ func TestReaderCorruptedFooterNoTimeIndex(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, f.Close())
 
-	_, err = NewReader(path)
+	_, err = NewReader(path, nil)
 	assert.ErrorIs(t, err, ErrInvalidMagic)
 }
 
@@ -261,7 +261,7 @@ func TestReaderInvalidMagic(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "bad.sst")
 			require.NoError(t, os.WriteFile(path, tc.content, 0644))
-			_, err := NewReader(path)
+			_, err := NewReader(path, nil)
 			assert.ErrorIs(t, err, ErrInvalidMagic)
 		})
 	}
@@ -279,7 +279,7 @@ func TestScanBlockAllocsZero(t *testing.T) {
 		})
 	}
 	path, _ := writeSSTable(t, opts, recs)
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Close() })
 
@@ -305,11 +305,11 @@ func TestConcurrentScanSameFile(t *testing.T) {
 	}
 	path, _ := writeSSTable(t, DefaultWriterOptions(), recs)
 
-	r1, err := NewReader(path)
+	r1, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r1.Close() })
 
-	r2, err := NewReader(path)
+	r2, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r2.Close() })
 
@@ -329,7 +329,7 @@ func TestConcurrentScanSameFile(t *testing.T) {
 func TestReaderEmptySSTable(t *testing.T) {
 	path, _ := writeSSTable(t, DefaultWriterOptions(), nil)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Close() })
 
@@ -346,7 +346,7 @@ func TestScanIteratorView(t *testing.T) {
 		{Timestamp: 500, SourceID: []byte("s5"), Payload: []byte("payload-five")},
 	}
 	path, _ := writeSSTable(t, DefaultWriterOptions(), recs)
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Close() })
 

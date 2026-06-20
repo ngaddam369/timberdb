@@ -31,7 +31,7 @@ func TestReaderV1ZstdRoundTrip(t *testing.T) {
 		WriterOptions{CompressionType: CompressionZstd, BlockSizeBytes: 512},
 		recs)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { r.Close() })
 
@@ -50,7 +50,7 @@ func TestReaderV1SnappyRoundTrip(t *testing.T) {
 		WriterOptions{CompressionType: CompressionSnappy, BlockSizeBytes: 512},
 		recs)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { r.Close() })
 
@@ -69,7 +69,7 @@ func TestReaderV0BackwardCompat(t *testing.T) {
 		WriterOptions{BlockSizeBytes: 512},
 		recs)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { r.Close() })
 
@@ -105,11 +105,11 @@ func TestReaderMixedV0V1Scan(t *testing.T) {
 		v1Recs)
 
 	// Open both readers and scan independently, simulating how the engine merges them.
-	r0, err := NewReader(v0Path)
+	r0, err := NewReader(v0Path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { r0.Close() })
 
-	r1, err := NewReader(v1Path)
+	r1, err := NewReader(v1Path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { r1.Close() })
 
@@ -132,7 +132,7 @@ func TestScanDecompAllocCount(t *testing.T) {
 		WriterOptions{CompressionType: CompressionZstd, BlockSizeBytes: 512},
 		recs)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Close() })
 
@@ -160,7 +160,7 @@ func TestReaderV2RoundTrip(t *testing.T) {
 		WriterOptions{ColumnOriented: true, BlockSizeBytes: 512},
 		recs)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { r.Close() })
 
@@ -182,7 +182,7 @@ func TestReaderV2WithCompressionRoundTrip(t *testing.T) {
 		WriterOptions{ColumnOriented: true, CompressionType: CompressionZstd, BlockSizeBytes: 512},
 		recs)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { r.Close() })
 
@@ -212,15 +212,15 @@ func TestMixedVersionPartitionScan(t *testing.T) {
 	pathV1 := buildSSTable(t, dir, "v1.sst", WriterOptions{CompressionType: CompressionZstd}, v1Recs)
 	pathV2 := buildSSTable(t, dir, "v2.sst", WriterOptions{ColumnOriented: true}, v2Recs)
 
-	r0, err := NewReader(pathV0)
+	r0, err := NewReader(pathV0, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { r0.Close() })
 
-	r1, err := NewReader(pathV1)
+	r1, err := NewReader(pathV1, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { r1.Close() })
 
-	r2, err := NewReader(pathV2)
+	r2, err := NewReader(pathV2, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { r2.Close() })
 
@@ -250,7 +250,7 @@ func TestReaderConcurrentCompressed(t *testing.T) {
 		WriterOptions{CompressionType: CompressionZstd, BlockSizeBytes: 512},
 		recs)
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { r.Close() })
 
@@ -282,5 +282,44 @@ func TestReaderConcurrentCompressed(t *testing.T) {
 	}
 	for i, c := range counts {
 		assert.Equal(t, len(recs), c, "goroutine %d count mismatch", i)
+	}
+}
+
+func TestReaderBlockCacheHit(t *testing.T) {
+	dir := t.TempDir()
+	recs := compressRecords(100)
+	path := buildSSTable(t, dir, "cached.sst",
+		WriterOptions{CompressionType: CompressionZstd, BlockSizeBytes: 512},
+		recs)
+
+	cache := NewBlockCache(8 << 20) // 8 MiB
+	r, err := NewReader(path, cache)
+	require.NoError(t, err)
+	t.Cleanup(func() { r.Close() })
+
+	collectFull := func() []record.Record {
+		it, err := r.Scan(math.MinInt64, math.MaxInt64, nil)
+		require.NoError(t, err)
+		defer func() { require.NoError(t, it.Close()) }()
+		var out []record.Record
+		for it.Next() {
+			out = append(out, it.View().Clone())
+		}
+		require.NoError(t, it.Err())
+		return out
+	}
+
+	// Cold scan: all blocks are cache misses.
+	cold := collectFull()
+	require.Len(t, cold, len(recs))
+	entries, _ := cache.Metrics()
+	assert.Equal(t, len(r.timeIndex), entries, "every block must be cached after first scan")
+
+	// Warm scan: cache hits must produce identical records.
+	warm := collectFull()
+	require.Len(t, warm, len(recs))
+	for i := range cold {
+		assert.Equal(t, cold[i].Timestamp, warm[i].Timestamp, "record %d timestamp mismatch on warm scan", i)
+		assert.Equal(t, cold[i].Payload, warm[i].Payload, "record %d payload mismatch on warm scan", i)
 	}
 }

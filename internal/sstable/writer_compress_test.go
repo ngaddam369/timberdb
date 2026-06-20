@@ -102,7 +102,7 @@ func TestWriterV1OffsetStartsAfterHeader(t *testing.T) {
 		WriterOptions{CompressionType: CompressionZstd, BlockSizeBytes: 4096},
 		compressRecords(10))
 
-	r, err := NewReader(path)
+	r, err := NewReader(path, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { r.Close() })
 

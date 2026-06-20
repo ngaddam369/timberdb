@@ -37,7 +37,6 @@ func (m *Memtable) Append(r record.Record) {
 	m.sizeBytes += recordSize(r)
 }
 
-// snapshot returns a point-in-time copy of m.records under RLock.
 func (m *Memtable) snapshot() []record.Record {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -50,16 +49,13 @@ func (m *Memtable) snapshot() []record.Record {
 // filtered to sourceID (nil means all sources). The snapshot is isolated from
 // subsequent Append calls.
 func (m *Memtable) Scan(start, end int64, sourceID []byte) record.Iterator {
-	snapshot := m.snapshot()
-	startIdx := sort.Search(len(snapshot), func(i int) bool {
-		return snapshot[i].Timestamp >= start
-	})
-	return &iterator{
-		records:  snapshot,
-		pos:      startIdx - 1,
-		end:      end,
-		sourceID: sourceID,
-	}
+	m.mu.RLock()
+	startIdx := sort.Search(len(m.records), func(i int) bool { return m.records[i].Timestamp >= start })
+	endIdx := sort.Search(len(m.records), func(i int) bool { return m.records[i].Timestamp >= end })
+	s := make([]record.Record, endIdx-startIdx)
+	copy(s, m.records[startIdx:endIdx])
+	m.mu.RUnlock()
+	return &iterator{records: s, pos: -1, end: end, sourceID: sourceID}
 }
 
 // ApproximateSize returns the cumulative byte size of all records

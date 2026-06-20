@@ -79,7 +79,7 @@ func (r *Router) Route(timestamp int64) (*TimePartition, error) {
 func (r *Router) Overlapping(start, end int64) []*TimePartition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	var out []*TimePartition
+	out := make([]*TimePartition, 0, len(r.partitions))
 	for win, p := range r.partitions {
 		if win.Overlaps(start, end) {
 			out = append(out, p)

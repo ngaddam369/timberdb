@@ -50,6 +50,9 @@ type Options struct {
 	// block, enabling payload-free count and rate aggregations via Engine.Aggregate.
 	// Existing v0/v1 files on disk are read with the row path automatically.
 	ColumnOriented bool
+	// BlockCacheBytes is the maximum number of bytes of decompressed SSTable block data
+	// held in memory across all open Readers. 0 disables the block cache.
+	BlockCacheBytes int64
 }
 
 // DefaultOptions returns a production-ready Options with conservative defaults.
@@ -66,5 +69,6 @@ func DefaultOptions() Options {
 		RetentionDuration:       0,
 		RetentionCheckInterval:  time.Hour,
 		CompactionCheckInterval: 30 * time.Second,
+		BlockCacheBytes:         64 << 20, // 64 MiB
 	}
 }

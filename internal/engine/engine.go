@@ -38,15 +38,14 @@ type ScanOptions struct {
 // Engine wires WAL, partition router, SSTable files, and manifest into a single
 // durable append+scan store. All exported methods are safe for concurrent use.
 type Engine struct {
-	mu       sync.RWMutex
-	dir      string
-	opts     Options
-	wal      *wal.WAL
-	router   *partition.Router
-	manifest *manifest.Manifest
-	// files maps each flushed partition window to its open SSTable readers,
-	// in the order they were flushed (oldest first).
-	files        map[partition.PartitionWindow][]*sstable.Reader
+	mu           sync.RWMutex
+	dir          string
+	opts         Options
+	wal          *wal.WAL
+	router       *partition.Router
+	manifest     *manifest.Manifest
+	files        map[partition.PartitionWindow][]*sstable.Reader // ordered oldest first
+	blockCache   *sstable.BlockCache
 	maxFlushedTS map[partition.PartitionWindow]int64 // highest ts already in an SSTable
 	flushCh      chan *partition.TimePartition
 	compactCh    chan partition.PartitionWindow // signals runCompactor after each flush
@@ -76,6 +75,10 @@ func Open(dir string, opts Options) (*Engine, error) {
 		return nil, err
 	}
 
+	var blockCache *sstable.BlockCache
+	if opts.BlockCacheBytes > 0 {
+		blockCache = sstable.NewBlockCache(opts.BlockCacheBytes)
+	}
 	e := &Engine{
 		dir:          dir,
 		opts:         opts,
@@ -87,12 +90,13 @@ func Open(dir string, opts Options) (*Engine, error) {
 		compactCh:    make(chan partition.PartitionWindow, 16),
 		closeCh:      make(chan struct{}),
 		strategy:     &compaction.FIFOStrategy{MaxFilesPerPartition: opts.MaxFilesPerPartition},
+		blockCache:   blockCache,
 	}
 
 	// Replay manifest — open all live SSTables and track maxFlushedTS per window.
 	if err := m.Replay(func(edit manifest.VersionEdit) {
 		for _, fe := range edit.AddedFiles {
-			r, rerr := sstable.NewReader(fe.Path)
+			r, rerr := sstable.NewReader(fe.Path, e.blockCache)
 			if rerr != nil {
 				slog.Error("engine: failed to open SSTable from manifest", "path", fe.Path, "err", rerr)
 				return
@@ -286,7 +290,7 @@ func (e *Engine) Scan(start, end time.Time, opts *ScanOptions) (record.Iterator,
 	e.metrics.ScansTotal.Inc()
 
 	partitions := e.router.Overlapping(startNs, endNs)
-	var iters []record.Iterator
+	iters := make([]record.Iterator, 0, len(partitions)*2)
 	for _, p := range partitions {
 		iters = append(iters, p.Scan(startNs, endNs, sourceID))
 		for _, r := range e.files[p.Window] {
@@ -458,7 +462,7 @@ func (e *Engine) flushPartition(p *partition.TimePartition) error {
 		slog.Error("engine: remove old WAL segment failed", "path", oldWALPath, "err", err)
 	}
 
-	r, err := sstable.NewReader(sstPath)
+	r, err := sstable.NewReader(sstPath, e.blockCache)
 	if err != nil {
 		return err
 	}
@@ -578,7 +582,7 @@ func (e *Engine) maybeCompact(win partition.PartitionWindow) {
 	}
 
 	compactStart := time.Now()
-	merged, err := compaction.Merge(selected, outputPath, wopts, e.manifest)
+	merged, err := compaction.Merge(selected, outputPath, wopts, e.manifest, e.blockCache)
 	if err != nil {
 		slog.Error("engine: compaction failed", "window", win.Start, "err", err)
 		return

@@ -78,7 +78,7 @@ func newInspectSSTCmd() *cobra.Command {
 		Use:   "sstable",
 		Short: "Inspect an SSTable file (footer metadata)",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			r, err := sstable.NewReader(filePath)
+			r, err := sstable.NewReader(filePath, nil)
 			if err != nil {
 				return err
 			}

@@ -94,13 +94,13 @@ func TestCompaction(t *testing.T) {
 			{Timestamp: 4, SourceID: []byte("b"), Payload: []byte("p4")},
 		})
 
-		r1, err := sstable.NewReader(path1)
+		r1, err := sstable.NewReader(path1, nil)
 		require.NoError(t, err)
-		r2, err := sstable.NewReader(path2)
+		r2, err := sstable.NewReader(path2, nil)
 		require.NoError(t, err)
 
 		outPath := filepath.Join(dir, "merged.sst")
-		merged, err := Merge([]*sstable.Reader{r1, r2}, outPath, wopts, m)
+		merged, err := Merge([]*sstable.Reader{r1, r2}, outPath, wopts, m, nil)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, r1.Close()) })
 		t.Cleanup(func() { require.NoError(t, r2.Close()) })
@@ -144,13 +144,13 @@ func TestCompaction(t *testing.T) {
 			{Timestamp: 20, SourceID: []byte("s"), Payload: []byte("p")},
 		})
 
-		r1, err := sstable.NewReader(path1)
+		r1, err := sstable.NewReader(path1, nil)
 		require.NoError(t, err)
-		r2, err := sstable.NewReader(path2)
+		r2, err := sstable.NewReader(path2, nil)
 		require.NoError(t, err)
 
 		outPath := filepath.Join(dir, "merged.sst")
-		merged, err := Merge([]*sstable.Reader{r1, r2}, outPath, wopts, m)
+		merged, err := Merge([]*sstable.Reader{r1, r2}, outPath, wopts, m, nil)
 		require.NoError(t, err)
 		require.NoError(t, r1.Close())
 		require.NoError(t, r2.Close())
@@ -194,11 +194,11 @@ func TestCompaction(t *testing.T) {
 			{Timestamp: 2, SourceID: []byte("s"), Payload: []byte("p2")},
 		})
 
-		r1, err := sstable.NewReader(path1)
+		r1, err := sstable.NewReader(path1, nil)
 		require.NoError(t, err)
 
 		outPath := filepath.Join(dir, "merged.sst")
-		merged, err := Merge([]*sstable.Reader{r1}, outPath, wopts, m)
+		merged, err := Merge([]*sstable.Reader{r1}, outPath, wopts, m, nil)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, r1.Close()) })
 		t.Cleanup(func() { require.NoError(t, merged.Close()) })
@@ -237,13 +237,13 @@ func TestCompaction(t *testing.T) {
 		})
 		buildSSTable(t, pathEmpty, win, nil)
 
-		rFull, err := sstable.NewReader(pathFull)
+		rFull, err := sstable.NewReader(pathFull, nil)
 		require.NoError(t, err)
-		rEmpty, err := sstable.NewReader(pathEmpty)
+		rEmpty, err := sstable.NewReader(pathEmpty, nil)
 		require.NoError(t, err)
 
 		outPath := filepath.Join(dir, "merged.sst")
-		merged, err := Merge([]*sstable.Reader{rFull, rEmpty}, outPath, wopts, m)
+		merged, err := Merge([]*sstable.Reader{rFull, rEmpty}, outPath, wopts, m, nil)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, rFull.Close()) })
 		t.Cleanup(func() { require.NoError(t, rEmpty.Close()) })
@@ -273,12 +273,12 @@ func TestCompaction(t *testing.T) {
 			{Timestamp: 6, SourceID: []byte("s"), Payload: []byte("p")},
 		})
 
-		r1, err := sstable.NewReader(path1)
+		r1, err := sstable.NewReader(path1, nil)
 		require.NoError(t, err)
-		r2, err := sstable.NewReader(path2)
+		r2, err := sstable.NewReader(path2, nil)
 		require.NoError(t, err)
 
-		merged, err := Merge([]*sstable.Reader{r1, r2}, filepath.Join(dir, "m.sst"), wopts, m)
+		merged, err := Merge([]*sstable.Reader{r1, r2}, filepath.Join(dir, "m.sst"), wopts, m, nil)
 		require.NoError(t, err)
 		require.NoError(t, r1.Close())
 		require.NoError(t, r2.Close())
@@ -329,12 +329,12 @@ func TestMergePreservesPayload(t *testing.T) {
 	var readers []*sstable.Reader
 	for _, inp := range inputs {
 		buildSSTable(t, inp.path, win, inp.records)
-		r, err := sstable.NewReader(inp.path)
+		r, err := sstable.NewReader(inp.path, nil)
 		require.NoError(t, err)
 		readers = append(readers, r)
 	}
 
-	merged, err := Merge(readers, filepath.Join(dir, "merged.sst"), wopts, m)
+	merged, err := Merge(readers, filepath.Join(dir, "merged.sst"), wopts, m, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = merged.Close() })
 	for _, r := range readers {

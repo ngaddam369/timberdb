@@ -2,7 +2,11 @@
 
 package sstable
 
-import "golang.org/x/sys/unix"
+import (
+	"log/slog"
+
+	"golang.org/x/sys/unix"
+)
 
 func (r *Reader) initMmap() error {
 	if r.meta.TimeIndexOffset == 0 {
@@ -14,6 +18,9 @@ func (r *Reader) initMmap() error {
 	)
 	if err != nil {
 		return err
+	}
+	if err := unix.Madvise(data, unix.MADV_SEQUENTIAL); err != nil {
+		slog.Debug("sstable: madvise MADV_SEQUENTIAL failed", "err", err)
 	}
 	r.mmap = data
 	return nil

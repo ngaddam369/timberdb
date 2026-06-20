@@ -27,18 +27,17 @@ type Reader struct {
 	mmap            []byte              // nil on Windows or when there are no data blocks
 	compressionType CompressionType     // CompressionNone for v0 files
 	columnar        bool                // true for version-2 (column-oriented) files
+	cache           *BlockCache         // nil disables block caching
 }
 
 // NewReader opens path, validates the footer, and loads the time index into memory.
-// The file stays open until Close is called.
-func NewReader(path string) (*Reader, error) {
+// cache may be nil to disable block caching. The file stays open until Close is called.
+func NewReader(path string, cache *BlockCache) (*Reader, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 
-	// On any error after this point, close the file before returning.
-	// The success flag is set only when we hand ownership to the Reader.
 	success := false
 	defer func() {
 		if !success {
@@ -91,7 +90,7 @@ func NewReader(path string) (*Reader, error) {
 		return nil, err
 	}
 
-	r := &Reader{f: f, meta: meta, timeIndex: timeIndex, srcIndex: srcIndex}
+	r := &Reader{f: f, meta: meta, timeIndex: timeIndex, srcIndex: srcIndex, cache: cache}
 
 	// Detect v1 format: if the file is large enough to hold a header plus at least
 	// one data block, check whether the first 8 bytes equal headerMagic.
@@ -175,7 +174,7 @@ func (r *Reader) Scan(start, end int64, sourceID []byte) (record.Iterator, error
 		}, nil
 	}
 
-	blockData, blockRem, err := r.readBlockRaw(startBlock, nil)
+	blockData, decompBuf, blockRem, err := r.readBlockRaw(startBlock, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -187,8 +186,8 @@ func (r *Reader) Scan(start, end int64, sourceID []byte) (record.Iterator, error
 		sourceID:  sourceID,
 		blockIdx:  startBlock,
 		blockData: blockData,
-		decompBuf: blockData, // seed reuse buffer; nil for uncompressed (harmless)
-		blockOff:  4,         // skip 4-byte RecordCount header
+		decompBuf: decompBuf,
+		blockOff:  4, // skip 4-byte RecordCount header
 		blockRem:  blockRem,
 	}, nil
 }
@@ -204,38 +203,58 @@ func (r *Reader) Close() error {
 	return r.f.Close()
 }
 
-// readBlockRaw reads and CRC-validates the block at idx. Returns the validated payload
-// (sans CRC), the record count from the header, and any error.
-// decompBuf is an optional hint buffer for compressed files: when its capacity is sufficient
-// to hold the decompressed block the backing array is reused, avoiding an allocation.
-func (r *Reader) readBlockRaw(idx int, decompBuf []byte) (payload []byte, count int, err error) {
+// readBlockRaw reads and CRC-validates the block at idx.
+// Returns (payload, newDecompBuf, count, err).
+// newDecompBuf is the allocation to pass on the next call for decompression reuse: it equals
+// the fresh decompressed buffer on a cache miss, and the unchanged input decompBuf otherwise
+// (cache hit or uncompressed). Callers must NOT pass a cached payload slice back as decompBuf
+// — that buffer is read-only and must not be overwritten by a subsequent decompression.
+func (r *Reader) readBlockRaw(idx int, decompBuf []byte) (payload, newDecompBuf []byte, count int, err error) {
 	e := r.timeIndex[idx]
 	var buf []byte
 	if r.mmap != nil {
 		buf = r.mmap[e.offset : e.offset+uint64(e.size)]
 	} else {
 		b := make([]byte, e.size)
-		if _, err := r.f.ReadAt(b, int64(e.offset)); err != nil {
-			return nil, 0, err
+		if _, err = r.f.ReadAt(b, int64(e.offset)); err != nil {
+			return nil, decompBuf, 0, err
 		}
 		buf = b
 	}
 	if r.compressionType != CompressionNone {
-		decompressed, derr := decompress(r.compressionType, buf, decompBuf)
-		if derr != nil {
-			return nil, 0, ErrBlockCorrupt
+		if r.cache != nil {
+			if cached, ok := r.cache.get(r.meta.Path, e.offset); ok {
+				count = int(binary.LittleEndian.Uint32(cached[:4]))
+				return cached, decompBuf, count, nil
+			}
 		}
-		buf = decompressed
+		var decompressed []byte
+		decompressed, err = decompress(r.compressionType, buf, decompBuf)
+		if err != nil {
+			return nil, decompBuf, 0, ErrBlockCorrupt
+		}
+		payload, err = validateBlock(decompressed)
+		if err != nil {
+			return nil, decompressed, 0, err
+		}
+		if len(payload) < 4 {
+			return nil, decompressed, 0, ErrBlockCorrupt
+		}
+		count = int(binary.LittleEndian.Uint32(payload[:4]))
+		if r.cache != nil {
+			r.cache.put(r.meta.Path, e.offset, payload)
+		}
+		return payload, decompressed, count, nil
 	}
 	payload, err = validateBlock(buf)
 	if err != nil {
-		return nil, 0, err
+		return nil, decompBuf, 0, err
 	}
 	if len(payload) < 4 {
-		return nil, 0, ErrBlockCorrupt
+		return nil, decompBuf, 0, ErrBlockCorrupt
 	}
 	count = int(binary.LittleEndian.Uint32(payload[:4]))
-	return payload, count, nil
+	return payload, decompBuf, count, nil
 }
 
 // loadTimeIndex reads the time index block and parses it into a slice of entries.
@@ -344,13 +363,15 @@ func (it *scanIterator) Next() bool {
 			return false
 		}
 
-		payload, count, err := it.r.readBlockRaw(it.blockIdx, it.decompBuf)
+		var payload []byte
+		var count int
+		var err error
+		payload, it.decompBuf, count, err = it.r.readBlockRaw(it.blockIdx, it.decompBuf)
 		if err != nil {
 			it.err = err
 			return false
 		}
 		it.blockData = payload
-		it.decompBuf = payload // update for next block
 		it.blockOff = 4
 		it.blockRem = count
 	}
@@ -363,7 +384,6 @@ func (it *scanIterator) View() record.RecordView { return it.current }
 // Record returns a fully owned copy of the current record.
 func (it *scanIterator) Record() record.Record { return it.current.Clone() }
 
-// Close is a no-op; the Reader owns the file lifetime.
 func (it *scanIterator) Close() error { return nil }
 
 // Err returns the first read error encountered during iteration, or nil.

@@ -128,7 +128,7 @@ func TestWriteFlushScanRoundTrip(t *testing.T) {
 		p.Seal()
 		path := filepath.Join(dir, fmt.Sprintf("part-%d.sst", i))
 		flushToSSTable(t, path, p, m)
-		r, err := sstable.NewReader(path)
+		r, err := sstable.NewReader(path, nil)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = r.Close() })
 		readers = append(readers, r)
@@ -209,7 +209,7 @@ func TestReopenAfterFlush(t *testing.T) {
 
 	var scanned int
 	for _, fe := range liveFiles {
-		r, err := sstable.NewReader(fe.Path)
+		r, err := sstable.NewReader(fe.Path, nil)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = r.Close() })
 		scanned += len(drainReader(t, r))

@@ -102,6 +102,27 @@ func BenchmarkTimberDBAppend(b *testing.B) {
 	reportSA(b, dir)
 }
 
+// timberdbScanAll drives a full scan of [start, end) and returns the record count.
+func timberdbScanAll(b *testing.B, e *engine.Engine, start, end time.Time) int {
+	b.Helper()
+	it, err := e.Scan(start, end, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	var n int
+	for it.Next() {
+		_ = it.View()
+		n++
+	}
+	if err := it.Err(); err != nil {
+		b.Fatal(err)
+	}
+	if err := it.Close(); err != nil {
+		b.Fatal(err)
+	}
+	return n
+}
+
 func BenchmarkTimberDBScan(b *testing.B) {
 	dir := b.TempDir()
 	// Set up: write benchScanN records and flush them all to SST via Close.
@@ -143,22 +164,14 @@ func BenchmarkTimberDBScan(b *testing.B) {
 
 	scanEnd := benchBase.Add(time.Duration(benchScanN) * time.Millisecond)
 
+	// Warm-up: pre-warm the block cache so the timed loop measures steady-state performance.
+	timberdbScanAll(b, e, benchBase, scanEnd)
+
 	b.SetBytes(int64(benchScanN) * benchPayloadSize)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		it, err := e.Scan(benchBase, scanEnd, nil)
-		if err != nil {
-			b.Fatal(err)
-		}
-		// View returns zero-copy slices into the block buffer — no per-record allocation.
-		for it.Next() {
-			_ = it.View()
-		}
-		if err := it.Err(); err != nil {
-			b.Fatal(err)
-		}
-		if err := it.Close(); err != nil {
-			b.Fatal(err)
+		if n := timberdbScanAll(b, e, benchBase, scanEnd); n != benchScanN {
+			b.Fatalf("scan returned %d records, want %d", n, benchScanN)
 		}
 	}
 }
@@ -226,6 +239,34 @@ func BenchmarkBadgerAppend(b *testing.B) {
 	reportSA(b, dir)
 }
 
+// badgerScanAll drives a full scan over [startKey, endKey) and returns the record count.
+func badgerScanAll(b *testing.B, db *badger.DB, startKey, endKey []byte) int {
+	b.Helper()
+	var n int
+	if err := db.View(func(txn *badger.Txn) error {
+		iopts := badger.DefaultIteratorOptions
+		iopts.PrefetchSize = 64
+		it := txn.NewIterator(iopts)
+		defer it.Close()
+		for it.Seek(startKey); it.Valid(); it.Next() {
+			if bytes.Compare(it.Item().Key(), endKey) >= 0 {
+				break
+			}
+			if err := it.Item().Value(func(v []byte) error {
+				_ = v
+				return nil
+			}); err != nil {
+				return err
+			}
+			n++
+		}
+		return nil
+	}); err != nil {
+		b.Fatal(err)
+	}
+	return n
+}
+
 func BenchmarkBadgerScan(b *testing.B) {
 	dir := b.TempDir()
 	bopts := badger.DefaultOptions(dir).WithLogger(nil).WithSyncWrites(true)
@@ -233,7 +274,6 @@ func BenchmarkBadgerScan(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer func() { _ = db.Close() }()
 
 	for i := range benchScanN {
 		ts := benchBase.Add(time.Duration(i) * time.Millisecond).UnixNano()
@@ -245,31 +285,27 @@ func BenchmarkBadgerScan(b *testing.B) {
 		}
 	}
 
+	// Close and reopen to flush the MemTable to SSTables, matching TimberDB's state.
+	if closeErr := db.Close(); closeErr != nil {
+		b.Fatal(closeErr)
+	}
+	db, err = badger.Open(bopts)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
 	startKey := tsKey(benchBase.UnixNano())
 	endKey := tsKey(benchBase.Add(time.Duration(benchScanN) * time.Millisecond).UnixNano())
+
+	// Warm-up: pre-warm internal caches before timing.
+	badgerScanAll(b, db, startKey, endKey)
 
 	b.SetBytes(int64(benchScanN) * benchPayloadSize)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := db.View(func(txn *badger.Txn) error {
-			iopts := badger.DefaultIteratorOptions
-			iopts.PrefetchSize = 64
-			it := txn.NewIterator(iopts)
-			defer it.Close()
-			for it.Seek(startKey); it.Valid(); it.Next() {
-				if bytes.Compare(it.Item().Key(), endKey) >= 0 {
-					break
-				}
-				if err := it.Item().Value(func(v []byte) error {
-					_ = v
-					return nil
-				}); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); err != nil {
-			b.Fatal(err)
+		if n := badgerScanAll(b, db, startKey, endKey); n != benchScanN {
+			b.Fatalf("scan returned %d records, want %d", n, benchScanN)
 		}
 	}
 }
@@ -334,6 +370,27 @@ func BenchmarkPebbleAppend(b *testing.B) {
 	reportSA(b, dir)
 }
 
+// pebbleScanAll drives a full scan over [startKey, endKey) and returns the record count.
+func pebbleScanAll(b *testing.B, db *pebble.DB, startKey, endKey []byte) int {
+	b.Helper()
+	it, err := db.NewIter(&pebble.IterOptions{
+		LowerBound: startKey,
+		UpperBound: endKey,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	var n int
+	for valid := it.First(); valid; valid = it.Next() {
+		_ = it.Value()
+		n++
+	}
+	if err := it.Close(); err != nil {
+		b.Fatal(err)
+	}
+	return n
+}
+
 func BenchmarkPebbleScan(b *testing.B) {
 	dir := b.TempDir()
 	db, err := pebble.Open(dir, &pebble.Options{})
@@ -350,24 +407,22 @@ func BenchmarkPebbleScan(b *testing.B) {
 		}
 	}
 
+	// Flush MemTable to L0 SSTables so the scan measures on-disk performance.
+	if err := db.Flush(); err != nil {
+		b.Fatal(err)
+	}
+
 	startKey := tsKey(benchBase.UnixNano())
 	endKey := tsKey(benchBase.Add(time.Duration(benchScanN) * time.Millisecond).UnixNano())
+
+	// Warm-up: pre-warm Pebble's block cache before timing.
+	pebbleScanAll(b, db, startKey, endKey)
 
 	b.SetBytes(int64(benchScanN) * benchPayloadSize)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		it, err := db.NewIter(&pebble.IterOptions{
-			LowerBound: startKey,
-			UpperBound: endKey,
-		})
-		if err != nil {
-			b.Fatal(err)
-		}
-		for valid := it.First(); valid; valid = it.Next() {
-			_ = it.Value()
-		}
-		if err := it.Close(); err != nil {
-			b.Fatal(err)
+		if n := pebbleScanAll(b, db, startKey, endKey); n != benchScanN {
+			b.Fatalf("scan returned %d records, want %d", n, benchScanN)
 		}
 	}
 }

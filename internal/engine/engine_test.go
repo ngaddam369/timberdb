@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ngaddam369/timberdb/internal/record"
+	"github.com/ngaddam369/timberdb/internal/sstable"
 )
 
 func openTestEngine(t *testing.T, opts Options) *Engine {
@@ -334,6 +335,61 @@ func TestEngineAggregate(t *testing.T) {
 		})
 		require.ErrorIs(t, err, ErrInvalidBucketWidth)
 	})
+}
+
+func TestEngineBlockCache(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().Add(time.Hour).Truncate(time.Hour)
+	const N = 200
+
+	// Write records and close to flush memtable → SSTable.
+	func() {
+		opts := DefaultOptions()
+		opts.CompactionCheckInterval = time.Hour
+		opts.RetentionCheckInterval = time.Hour
+		opts.CompressionType = sstable.CompressionZstd
+		e, err := Open(dir, opts)
+		require.NoError(t, err)
+		defer func() { require.NoError(t, e.Close()) }()
+		for i := range N {
+			require.NoError(t, e.Append(record.Record{
+				Timestamp: base.Add(time.Duration(i) * time.Second).UnixNano(),
+				SourceID:  []byte("src"),
+				Payload:   []byte("payload"),
+			}))
+		}
+	}()
+
+	// Reopen — block cache starts cold.
+	opts := DefaultOptions()
+	opts.CompactionCheckInterval = time.Hour
+	opts.RetentionCheckInterval = time.Hour
+	opts.CompressionType = sstable.CompressionZstd
+	e, err := Open(dir, opts)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, e.Close()) })
+
+	require.NotNil(t, e.blockCache, "block cache must be non-nil with default options")
+	entries, _ := e.blockCache.Metrics()
+	assert.Equal(t, 0, entries, "cache must be empty before first scan")
+
+	scan := func() []record.Record {
+		it, err := e.Scan(base, base.Add(time.Hour), nil)
+		require.NoError(t, err)
+		return drainIter(t, it)
+	}
+
+	cold := scan()
+	require.Len(t, cold, N, "cold scan must return all records")
+	entries, _ = e.blockCache.Metrics()
+	assert.Positive(t, entries, "cache must be populated after first scan")
+
+	warm := scan()
+	require.Len(t, warm, N, "warm scan must return all records")
+	for i := range cold {
+		assert.Equal(t, cold[i].Timestamp, warm[i].Timestamp, "record %d timestamp must match", i)
+		assert.Equal(t, cold[i].Payload, warm[i].Payload, "record %d payload must match", i)
+	}
 }
 
 // staticIter is a test-only iterator over an in-memory slice.

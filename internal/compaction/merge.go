@@ -26,6 +26,7 @@ func Merge(
 	outputPath string,
 	wopts sstable.WriterOptions,
 	m *manifest.Manifest,
+	cache *sstable.BlockCache,
 ) (*sstable.Reader, error) {
 	inputMetas := make([]sstable.SSTableMeta, len(readers))
 	for i, r := range readers {
@@ -149,7 +150,7 @@ func Merge(
 		}
 	}
 
-	return sstable.NewReader(outputPath)
+	return sstable.NewReader(outputPath, cache)
 }
 
 // mergeItem is one slot in the k-way merge heap.
