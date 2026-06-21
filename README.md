@@ -10,6 +10,18 @@ Scan(start,end) →  Router  →  SST skip-by-time  →  MergeIter
                              TTL sweeper  →  os.Remove (expired SSTs)
 ```
 
+## Documentation
+
+Full documentation is available at **https://ngaddam369.github.io/timberdb/**
+
+- [Getting Started](https://ngaddam369.github.io/timberdb/getting-started.html) — Open, Append, Scan, Aggregate
+- [Configuration](https://ngaddam369.github.io/timberdb/configuration.html) — all 14 options with defaults
+- [Architecture](https://ngaddam369.github.io/timberdb/architecture.html) — write/read/compaction/retention paths
+- [Design](https://ngaddam369.github.io/timberdb/design.html) — design decisions and rationale
+- [Benchmarks](https://ngaddam369.github.io/timberdb/benchmarks.html) — methodology and numbers
+- [Metrics](https://ngaddam369.github.io/timberdb/metrics.html) — Prometheus metrics reference
+- [CLI Reference](https://ngaddam369.github.io/timberdb/cli-reference.html) — append, scan, inspect
+
 ## Quick start
 
 ```bash
