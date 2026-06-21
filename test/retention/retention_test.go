@@ -87,9 +87,12 @@ func TestRetentionPrecision(t *testing.T) {
 
 		waitExpired(t, m)
 
-		ssts, err := filepath.Glob(filepath.Join(dir, "*.sst"))
-		require.NoError(t, err)
-		assert.Empty(t, ssts, "all SST files must be deleted after retention sweep")
+		// sweepRetention snapshots e.files under a read-lock; SSTs flushed after
+		// that snapshot are caught by the next tick. Poll until all files are gone.
+		require.Eventually(t, func() bool {
+			ssts, _ := filepath.Glob(filepath.Join(dir, "*.sst"))
+			return len(ssts) == 0
+		}, 5*time.Second, 10*time.Millisecond, "all SST files must be deleted after retention sweep")
 	})
 
 	t.Run("near_horizon_not_deleted", func(t *testing.T) {
