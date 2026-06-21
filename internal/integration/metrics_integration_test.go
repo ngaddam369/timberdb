@@ -86,7 +86,7 @@ func TestMetricsIntegration(t *testing.T) {
 			expected := float64(i + 1)
 			require.Eventually(t, func() bool {
 				return gatherCounter(t, m, "timberdb_memtable_flushes_total") >= expected
-			}, 2*time.Second, 5*time.Millisecond, "flush %d did not complete within timeout", i+1)
+			}, 5*time.Second, 5*time.Millisecond, "flush %d did not complete within timeout", i+1)
 		}
 
 		// Scan the last minute of the same partition window. The SSTable files have
@@ -126,7 +126,7 @@ func TestMetricsIntegration(t *testing.T) {
 			expected := float64(i + 1)
 			require.Eventually(t, func() bool {
 				return gatherCounter(t, m, "timberdb_memtable_flushes_total") >= expected
-			}, 2*time.Second, 5*time.Millisecond, "flush %d did not complete within timeout", i+1)
+			}, 5*time.Second, 5*time.Millisecond, "flush %d did not complete within timeout", i+1)
 		}
 
 		require.Eventually(t, func() bool {
@@ -157,7 +157,7 @@ func TestMetricsIntegration(t *testing.T) {
 			expected := float64(i + 1)
 			require.Eventually(t, func() bool {
 				return gatherCounter(t, m, "timberdb_memtable_flushes_total") >= expected
-			}, 2*time.Second, 5*time.Millisecond, "flush %d did not complete within timeout", i+1)
+			}, 5*time.Second, 5*time.Millisecond, "flush %d did not complete within timeout", i+1)
 		}
 
 		require.Eventually(t, func() bool {

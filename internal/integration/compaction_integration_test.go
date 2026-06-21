@@ -88,14 +88,13 @@ func TestCompactionIntegration(t *testing.T) {
 			return len(ssts) >= 1
 		}, 5*time.Second, 10*time.Millisecond, "flush must produce at least one SST before retention check")
 
+		// sweepRetention snapshots e.files under a read-lock; SSTs flushed after
+		// that snapshot are caught by the next tick. Poll until the directory is
+		// empty rather than doing a one-shot check after the first expiry is seen.
 		require.Eventually(t, func() bool {
 			ssts, _ := filepath.Glob(filepath.Join(dir, "*.sst"))
 			return len(ssts) == 0
 		}, 5*time.Second, 10*time.Millisecond, "SSTs not deleted by retention within timeout")
-
-		ssts, err := filepath.Glob(filepath.Join(dir, "*.sst"))
-		require.NoError(t, err)
-		assert.Empty(t, ssts)
 	})
 
 	t.Run("reopen_after_compaction", func(t *testing.T) {
@@ -171,14 +170,22 @@ func TestCompactionIntegration(t *testing.T) {
 			return len(ssts) >= 1
 		}, 5*time.Second, 10*time.Millisecond, "flush must produce at least one SST before retention check")
 
+		// Wait until both conditions hold atomically: all SSTs are gone AND the scan
+		// returns empty. Checking them separately leaves a window where a pending flush
+		// can create a new SST after the SST check passes but before the scan runs.
+		scanStart := base.Truncate(time.Hour)
 		require.Eventually(t, func() bool {
 			ssts, _ := filepath.Glob(filepath.Join(dir, "*.sst"))
-			return len(ssts) == 0
-		}, 5*time.Second, 10*time.Millisecond, "SSTs not deleted by retention within timeout")
-
-		// After retention, scan should return empty without error.
-		scanStart := base.Truncate(time.Hour)
-		got := drainEngine(t, e, scanStart, scanStart.Add(time.Hour))
-		assert.Empty(t, got)
+			if len(ssts) > 0 {
+				return false
+			}
+			it, err := e.Scan(scanStart, scanStart.Add(time.Hour), nil)
+			if err != nil {
+				return false
+			}
+			hasAny := it.Next()
+			_ = it.Close()
+			return !hasAny
+		}, 5*time.Second, 10*time.Millisecond, "scan must be empty and all SSTs deleted after retention")
 	})
 }
