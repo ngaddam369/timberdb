@@ -10,15 +10,15 @@ Every call to `Append` follows this sequence synchronously on the caller's gorou
 
 ```mermaid
 flowchart LR
-    A(["Append(rec)"]) --> B["WAL.Append\n+ fsync"]
-    B --> C["Router.Route\ntimestamp → partition"]
-    C --> D["Memtable.Append\nbinary-search insert"]
-    D -->|"size >= MemtableSizeBytes"| E["signal flushCh\nnon-blocking"]
+    A(["Append(rec)"]) --> B["WAL.Append<br/>+ fsync"]
+    B --> C["Router.Route<br/>timestamp → partition"]
+    C --> D["Memtable.Append<br/>binary-search insert"]
+    D -->|"size >= MemtableSizeBytes"| E["signal flushCh<br/>non-blocking"]
 
     subgraph bg ["Background goroutine (runFlusher)"]
-        F["WAL.Rotate\nnew segment"] --> G["SSTableWriter\nstream + compress blocks"]
-        G --> H["Manifest.Append\nVersionEdit"]
-        H --> I["os.Remove\nold WAL segment"]
+        F["WAL.Rotate<br/>new segment"] --> G["SSTableWriter<br/>stream + compress blocks"]
+        G --> H["Manifest.Append<br/>VersionEdit"]
+        H --> I["os.Remove<br/>old WAL segment"]
     end
 
     E --> bg
@@ -44,17 +44,17 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A(["Scan(start, end)"]) --> B["Router.Overlapping\nskip non-overlapping partitions"]
-    B --> C["Memtable.Scan\nin-memory range"]
-    B --> D["SSTable Readers\ntime-index binary search"]
+    A(["Scan(start, end)"]) --> B["Router.Overlapping<br/>skip non-overlapping partitions"]
+    B --> C["Memtable.Scan<br/>in-memory range"]
+    B --> D["SSTable Readers<br/>time-index binary search"]
 
-    D --> E{"BlockCache\nhit?"}
-    E -->|"miss"| F["mmap / ReadAt\n+ decompress"]
-    F --> G["store in cache\nLRU"]
+    D --> E{"BlockCache<br/>hit?"}
+    E -->|"miss"| F["mmap / ReadAt<br/>+ decompress"]
+    F --> G["store in cache<br/>LRU"]
     E -->|"hit"| H["cached block bytes"]
 
-    C & G & H --> I["MergeIterator\nmin-heap (ts, sourceID)"]
-    I --> J(["RecordView\nzero-copy"])
+    C & G & H --> I["MergeIterator<br/>min-heap (ts, sourceID)"]
+    I --> J(["RecordView<br/>zero-copy"])
 ```
 
 **Step by step:**
@@ -81,11 +81,11 @@ Background compaction merges multiple SSTable files within a partition into a si
 
 ```mermaid
 flowchart LR
-    A["compactCh signal\nor 30s timer tick"] --> B{"partition\nSSTs >= MaxFiles?"}
-    B -->|"yes"| C["k-way MergeIterator\nover all SST readers"]
-    C --> D["new SSTableWriter\n(merged, sorted)"]
-    D --> E["Manifest.Append\n+1 new SST, -N old SSTs"]
-    E --> F["os.Remove\nold SST files"]
+    A["compactCh signal<br/>or 30s timer tick"] --> B{"partition<br/>SSTs >= MaxFiles?"}
+    B -->|"yes"| C["k-way MergeIterator<br/>over all SST readers"]
+    C --> D["new SSTableWriter<br/>(merged, sorted)"]
+    D --> E["Manifest.Append<br/>+1 new SST, -N old SSTs"]
+    E --> F["os.Remove<br/>old SST files"]
     B -->|"no"| G["skip"]
 ```
 
@@ -99,10 +99,10 @@ The TTL sweeper removes entire partitions whose data has expired beyond `Retenti
 
 ```mermaid
 flowchart LR
-    A["RetentionCheckInterval\nticker (default 1h)"] --> B["find partitions where\nmaxTimestamp < now - RetentionDuration"]
-    B --> C["os.Remove\nall SST files in partition"]
-    C --> D["Manifest.Append\nVersionEdit: -N files"]
-    D --> E["metrics:\nfiles_expired_total\nbytes_reclaimed_total\nupdated"]
+    A["RetentionCheckInterval<br/>ticker (default 1h)"] --> B["find partitions where<br/>maxTimestamp < now - RetentionDuration"]
+    B --> C["os.Remove<br/>all SST files in partition"]
+    C --> D["Manifest.Append<br/>VersionEdit: -N files"]
+    D --> E["metrics:<br/>files_expired_total<br/>bytes_reclaimed_total<br/>updated"]
 ```
 
 Retention deletes at partition granularity — an entire partition is removed once its newest record (`maxTimestamp`) is older than the retention horizon. This means the actual data retained may be up to one `PartitionDuration` older than the cutoff.
